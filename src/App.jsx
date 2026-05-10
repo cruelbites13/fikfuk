@@ -4,6 +4,12 @@ import * as Ably from "ably";
 const ABLY_KEY = import.meta.env.VITE_ABLY_KEY;
 const CHANNEL = "fikfuk-main";
 
+function getClientId(){
+  let id = localStorage.getItem("fikfuk_cid");
+  if(!id){ id = "u_"+Math.random().toString(36).slice(2,12); localStorage.setItem("fikfuk_cid",id); }
+  return id;
+}
+
 const PALETTES = [
   { id:0, label:"wheat",   body:"#f5deb3", shadow:"#c8a97e", stripe:"#b8860b", inner:"#ffb6c1", eye:"#2ecc71", pupil:"#1a5c36", nose:"#ff9eb5" },
   { id:1, label:"slate",   body:"#b0c4de", shadow:"#7a9ab5", stripe:"#4a7fa5", inner:"#ffc0cb", eye:"#3498db", pupil:"#1a4f7a", nose:"#ffb6c1" },
@@ -250,7 +256,7 @@ export default function App(){
   // Connect to Ably
   function connectAbly(myCat){
     const clientId = "user_"+Math.random().toString(36).slice(2,10);
-    myClientId.current = clientId;
+    clientId.current = clientId;
 
     const ably = new Ably.Realtime({
       key: ABLY_KEY,
@@ -264,8 +270,22 @@ export default function App(){
     // Subscribe to all messages
     channel.subscribe("join",(msg)=>{
       const s=gs.current;
-      if(msg.clientId===myClientId.current)return;
-      if(s.cats.find(c=>c.id===msg.clientId))return;
+      if(msg.clientId===clientId.current)return;
+      // overwrite if exists (fixes refresh duplicates)
+      s.cats=s.cats.filter(c=>c.id!==msg.clientId);
+      const d=msg.data;
+      const cat=makeCat(d.x,d.y,d.palId,d.name,false,false,null,msg.clientId);
+      cat.confessions=d.confessions??[];
+      cat.flip=d.flip??false;
+      s.cats.push(cat);
+      setOnlineCount(s.cats.filter(c=>!c.isSys).length);
+    });
+
+    // respond to newcomers with our own data
+    channel.subscribe("welcome",(msg)=>{
+      if(msg.clientId===clientId.current) return;
+      const s=gs.current;
+      if(s.cats.find(c=>c.id===msg.clientId)) return;
       const d=msg.data;
       const cat=makeCat(d.x,d.y,d.palId,d.name,false,false,null,msg.clientId);
       cat.confessions=d.confessions??[];
@@ -275,7 +295,7 @@ export default function App(){
     });
 
     channel.subscribe("move",(msg)=>{
-      if(msg.clientId===myClientId.current)return;
+      if(msg.clientId===clientId.current)return;
       const cat=gs.current.cats.find(c=>c.id===msg.clientId);
       if(!cat)return;
       const d=msg.data;
@@ -283,13 +303,13 @@ export default function App(){
     });
 
     channel.subscribe("confess",(msg)=>{
-      if(msg.clientId===myClientId.current)return;
+      if(msg.clientId===clientId.current)return;
       const cat=gs.current.cats.find(c=>c.id===msg.clientId);
       if(cat)cat.confessions=msg.data.confessions;
     });
 
     channel.subscribe("idle",(msg)=>{
-      if(msg.clientId===myClientId.current)return;
+      if(msg.clientId===clientId.current)return;
       const cat=gs.current.cats.find(c=>c.id===msg.clientId);
       if(cat)cat.idle=msg.data.idle;
     });
@@ -311,6 +331,18 @@ export default function App(){
     });
 
     // Announce join
+    const myData=()=>({
+      name:myCat.name,palId:myCat.palId,
+      x:myCat.x,y:myCat.y,flip:myCat.flip,
+      confessions:myCat.confessions,
+    });
+
+    // when someone joins, reply with our data so they see us
+    channel.subscribe("join",(msg)=>{
+      if(msg.clientId===clientId.current)return;
+      channel.publish("welcome",myData());
+    });
+
     channel.publish("join",{
       name:myCat.name,palId:myCat.palId,
       x:myCat.x,y:myCat.y,flip:myCat.flip,
@@ -572,6 +604,7 @@ export default function App(){
     <div style={{width:"100%",height:"100dvh",background:"#080810",position:"relative",overflow:"hidden",fontFamily:ff}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        html,body,#root{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#080810;}
         *{box-sizing:border-box;margin:0;padding:0;}
         .pal-swatch{cursor:pointer;transition:transform .12s,box-shadow .15s;}
         .pal-swatch:hover{transform:scale(1.12);}
