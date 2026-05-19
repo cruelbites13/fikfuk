@@ -255,72 +255,78 @@ export default function App(){
 
   // Connect to Ably
   function connectAbly(myCat){
-    const clientId = "user_"+Math.random().toString(36).slice(2,10);
-    clientId.current = clientId;
+    if(ablyRef.current) ablyRef.current.close();
 
     const ably = new Ably.Realtime({
       key: ABLY_KEY,
-      clientId,
+      clientId: clientId.current,
     });
     ablyRef.current = ably;
 
     const channel = ably.channels.get(CHANNEL);
     channelRef.current = channel;
 
-    // Subscribe to all messages
-    channel.subscribe("join",(msg)=>{
+    const myPresenceData = ()=>({
+      name:myCat.name, palId:myCat.palId,
+      x:myCat.x, y:myCat.y, flip:myCat.flip,
+      confessions:myCat.confessions,
+    });
+
+    // ── Presence: who is online ──────────────────────────────────────────
+    // Someone entered — add their cat
+    channel.presence.subscribe("enter",(member)=>{
+      if(member.clientId===clientId.current) return;
       const s=gs.current;
-      if(msg.clientId===clientId.current)return;
-      // overwrite if exists (fixes refresh duplicates)
-      s.cats=s.cats.filter(c=>c.id!==msg.clientId);
-      const d=msg.data;
-      const cat=makeCat(d.x,d.y,d.palId,d.name,false,false,null,msg.clientId);
+      const d=member.data;
+      s.cats=s.cats.filter(c=>c.id!==member.clientId);
+      const cat=makeCat(d.x,d.y,d.palId,d.name,false,false,null,member.clientId);
       cat.confessions=d.confessions??[];
       cat.flip=d.flip??false;
       s.cats.push(cat);
       setOnlineCount(s.cats.filter(c=>!c.isSys).length);
     });
 
-    // respond to newcomers with our own data
-    channel.subscribe("welcome",(msg)=>{
-      if(msg.clientId===clientId.current) return;
+    // Someone left — remove their cat
+    channel.presence.subscribe("leave",(member)=>{
       const s=gs.current;
-      if(s.cats.find(c=>c.id===msg.clientId)) return;
-      const d=msg.data;
-      const cat=makeCat(d.x,d.y,d.palId,d.name,false,false,null,msg.clientId);
-      cat.confessions=d.confessions??[];
-      cat.flip=d.flip??false;
-      s.cats.push(cat);
+      s.cats=s.cats.filter(c=>c.id!==member.clientId);
       setOnlineCount(s.cats.filter(c=>!c.isSys).length);
     });
 
+    // Someone updated their data
+    channel.presence.subscribe("update",(member)=>{
+      if(member.clientId===clientId.current) return;
+      const cat=gs.current.cats.find(c=>c.id===member.clientId);
+      if(cat&&member.data.confessions) cat.confessions=member.data.confessions;
+      if(cat&&member.data.idle!==undefined) cat.idle=member.data.idle;
+    });
+
+    // On connect: get everyone already online
+    channel.presence.get((err, members)=>{
+      if(err||!members) return;
+      const s=gs.current;
+      members.forEach(member=>{
+        if(member.clientId===clientId.current) return;
+        if(s.cats.find(c=>c.id===member.clientId)) return;
+        const d=member.data;
+        const cat=makeCat(d.x,d.y,d.palId,d.name,false,false,null,member.clientId);
+        cat.confessions=d.confessions??[];
+        cat.flip=d.flip??false;
+        s.cats.push(cat);
+      });
+      setOnlineCount(s.cats.filter(c=>!c.isSys).length);
+    });
+
+    // ── Messages: movement + reset ───────────────────────────────────────
     channel.subscribe("move",(msg)=>{
-      if(msg.clientId===clientId.current)return;
+      if(msg.clientId===clientId.current) return;
       const cat=gs.current.cats.find(c=>c.id===msg.clientId);
-      if(!cat)return;
+      if(!cat) return;
       const d=msg.data;
       cat.x=d.x;cat.y=d.y;cat.vx=d.vx;cat.vy=d.vy;cat.flip=d.flip;cat.state=d.state;
     });
 
-    channel.subscribe("confess",(msg)=>{
-      if(msg.clientId===clientId.current)return;
-      const cat=gs.current.cats.find(c=>c.id===msg.clientId);
-      if(cat)cat.confessions=msg.data.confessions;
-    });
-
-    channel.subscribe("idle",(msg)=>{
-      if(msg.clientId===clientId.current)return;
-      const cat=gs.current.cats.find(c=>c.id===msg.clientId);
-      if(cat)cat.idle=msg.data.idle;
-    });
-
-    channel.subscribe("leave",(msg)=>{
-      const s=gs.current;
-      s.cats=s.cats.filter(c=>c.id!==msg.clientId);
-      setOnlineCount(s.cats.filter(c=>!c.isSys).length);
-    });
-
-    channel.subscribe("reset",(msg)=>{
+    channel.subscribe("reset",()=>{
       localStorage.removeItem("fikfuk_s");
       const s=gs.current;
       s.cats=[];s.myId=null;s.ready=false;
@@ -330,29 +336,18 @@ export default function App(){
       setPhase("onboard");
     });
 
-    // Announce join
-    const myData=()=>({
-      name:myCat.name,palId:myCat.palId,
-      x:myCat.x,y:myCat.y,flip:myCat.flip,
-      confessions:myCat.confessions,
-    });
+    // ── Enter presence (announces us to everyone) ────────────────────────
+    channel.presence.enter(myPresenceData());
 
-    // when someone joins, reply with our data so they see us
-    channel.subscribe("join",(msg)=>{
-      if(msg.clientId===clientId.current)return;
-      channel.publish("welcome",myData());
-    });
-
-    channel.publish("join",{
-      name:myCat.name,palId:myCat.palId,
-      x:myCat.x,y:myCat.y,flip:myCat.flip,
-      confessions:myCat.confessions,
-    });
-
-    // Handle tab close
+    // ── Tab close: leave presence ────────────────────────────────────────
     window.addEventListener("beforeunload",()=>{
-      channel.publish("leave",{});
+      channel.presence.leave();
     });
+
+    // ── Store update fn for later use ────────────────────────────────────
+    myCat._updatePresence = ()=>{
+      channel.presence.update(myPresenceData());
+    };
   }
 
   // Spawn after canvas mounted
@@ -411,7 +406,7 @@ export default function App(){
       const myCat=s.cats.find(c=>c.id===s.myId);
       if(!myCat)return;
       myCat.idle=document.hidden;
-      channelRef.current?.publish("idle",{idle:document.hidden});
+      if(myCat._updatePresence) myCat._updatePresence();
     };
     document.addEventListener("visibilitychange",onVis);
     return()=>document.removeEventListener("visibilitychange",onVis);
@@ -593,7 +588,7 @@ export default function App(){
     if(myCat.confessions.length>5)myCat.confessions.shift();
     const sess=loadSession();
     if(sess)saveSession({...sess,confessions:myCat.confessions});
-    channelRef.current?.publish("confess",{confessions:myCat.confessions});
+    if(myCat._updatePresence) myCat._updatePresence();
     setInputVal("");setShowInput(false);
     startCooldown();
   };
