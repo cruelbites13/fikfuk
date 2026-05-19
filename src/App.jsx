@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import * as Ably from "ably";
 import { SpeedInsights } from "@vercel/speed-insights/react";
+import { Analytics } from "@vercel/analytics/react";
 
 const ABLY_KEY = import.meta.env.VITE_ABLY_KEY;
 const CHANNEL = "fikfuk-main";
@@ -733,6 +734,7 @@ export default function App(){
         </div>
       )}
       <SpeedInsights />
+      <Analytics />
     </div>
   );
 }
