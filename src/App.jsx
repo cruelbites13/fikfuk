@@ -305,25 +305,19 @@ export default function App(){
       if(cat&&member.data.idle!==undefined) cat.idle=member.data.idle;
     });
 
-    // On connect: get everyone already online
-    // delay so our own presence.enter is registered first
-    setTimeout(()=>{
-      channel.presence.get((err, members)=>{
-        if(err||!members) return;
-        const s=gs.current;
-        members.forEach(member=>{
-          if(member.clientId===clientId.current) return;
-          if(s.cats.find(c=>c.id===member.clientId)) return;
-          const d=member.data;
-          if(!d||!d.name) return;
-          const cat=makeCat(d.x,d.y,d.palId,d.name,false,false,null,member.clientId);
-          cat.confessions=d.confessions??[];
-          cat.flip=d.flip??false;
-          s.cats.push(cat);
-        });
-        setOnlineCount(s.cats.filter(c=>!c.isSys).length);
-      });
-    }, 1500);
+    // sync presence when fully loaded
+    channel.presence.subscribe("present",(member)=>{
+      if(member.clientId===clientId.current) return;
+      const s=gs.current;
+      if(s.cats.find(c=>c.id===member.clientId)) return;
+      const d=member.data;
+      if(!d||!d.name) return;
+      const cat=makeCat(d.x,d.y,d.palId,d.name,false,false,null,member.clientId);
+      cat.confessions=d.confessions??[];
+      cat.flip=d.flip??false;
+      s.cats.push(cat);
+      setOnlineCount(s.cats.filter(c=>!c.isSys).length);
+    });
 
     // ── Messages: movement + reset ───────────────────────────────────────
     channel.subscribe("move",(msg)=>{
