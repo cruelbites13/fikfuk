@@ -174,8 +174,10 @@ function genStars(w,h){
 }
 
 const RESET_MS=3*60*60*1000;
-function getEpoch(){return Math.floor(Date.now()/RESET_MS);}
-function nextResetMs(){return(getEpoch()+1)*RESET_MS-Date.now();}
+// Fixed anchor so all clients share the same reset clock
+const EPOCH_ANCHOR = 1700000000000;
+function getEpoch(){return Math.floor((Date.now()-EPOCH_ANCHOR)/RESET_MS);}
+function nextResetMs(){return EPOCH_ANCHOR+(getEpoch()+1)*RESET_MS-Date.now();}
 function fmtCountdown(ms){
   if(ms<=0)return"00:00:00";
   const h=Math.floor(ms/3600000),m=Math.floor((ms%3600000)/60000),s=Math.floor((ms%60000)/1000);
@@ -213,6 +215,7 @@ const P=3;
 
 export default function App(){
   const canvasRef  = useRef(null);
+  const clientId   = useRef(getClientId());
   const ablyRef    = useRef(null);
   const channelRef = useRef(null);
   const gs         = useRef({
