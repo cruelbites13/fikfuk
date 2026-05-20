@@ -456,5 +456,541 @@ export default function App(){
   };
 
   // ── Build system cats ──────────────────────────────────────────────────────
+
+  // ── Build system cats ──────────────────────────────────────────────────────
   function buildSysCats(){
-    const pc=makeCat(100
+    const pc=makeCat(1000,1000,SYS_PAL_PRIVACY,"policy",false,true,"privacy");
+    pc.confessions=[...PRIVACY_LINES];
+    const ac=makeCat(WORLD_W-1000,1000,SYS_PAL_ABOUT,"about",false,true,"about");
+    ac.confessions=[...ABOUT_LINES];
+    return[pc,ac];
+  }
+
+  const requestSpawn=useCallback((name,palId,restored=null)=>{
+    pendingSpawn.current={name,palId,restored};
+    phaseRef.current="play";
+    setPhase("play");
+  },[]);
+
+  useEffect(()=>{
+    if(phase!=="play")return;
+    const raf=requestAnimationFrame(()=>{
+      const cv=canvasRef.current;if(!cv)return;
+      cv.width=cv.offsetWidth||window.innerWidth;
+      cv.height=cv.offsetHeight||window.innerHeight;
+      const s=gs.current;
+      s.stars=genStars();
+      s.worldObjs=generateWorldObjects();
+      if(pendingSpawn.current){
+        const{name,palId,restored}=pendingSpawn.current;
+        pendingSpawn.current=null;
+        s.cats=buildSysCats();
+        const ox=restored?.x??2000+Math.random()*6000;
+        const oy=restored?.y??2000+Math.random()*6000;
+        const myCat=makeCat(ox,oy,palId,name,true,false,null,clientId.current);
+        if(restored?.confessions)myCat.confessions=[...restored.confessions];
+        s.cats.push(myCat);
+        s.myId=myCat.id;
+        s.cam={x:ox-cv.width/2,y:oy-cv.height/2};
+        s.ready=true;
+        saveSession({name,palId,confessions:myCat.confessions,x:ox,y:oy});
+        setOnlineCount(1);
+        connectAbly(myCat);
+      }
+    });
+    return()=>cancelAnimationFrame(raf);
+  },[phase]);
+
+  function connectAbly(myCat){
+    if(ablyRef.current)ablyRef.current.close();
+    const ably=new Ably.Realtime({key:ABLY_KEY,clientId:clientId.current});
+    ablyRef.current=ably;
+    const channel=ably.channels.get(CHANNEL);
+    channelRef.current=channel;
+    const myPresenceData=()=>({
+      name:myCat.name,palId:myCat.palId,
+      x:myCat.x,y:myCat.y,flip:myCat.flip,
+      confessions:myCat.confessions,
+    });
+    const addRemoteCat=(d,cid)=>{
+      const s=gs.current;
+      if(cid===clientId.current)return;
+      s.cats=s.cats.filter(c=>c.id!==cid);
+      if(!d||!d.name)return;
+      const cat=makeCat(d.x??WORLD_W/2,d.y??WORLD_H/2,d.palId??0,d.name,false,false,null,cid);
+      cat.confessions=d.confessions??[];
+      cat.flip=d.flip??false;
+      s.cats.push(cat);
+      setOnlineCount(s.cats.filter(c=>!c.isSys).length);
+    };
+    channel.presence.subscribe("enter",(m)=>addRemoteCat(m.data,m.clientId));
+    channel.presence.subscribe("present",(m)=>addRemoteCat(m.data,m.clientId));
+    channel.presence.subscribe("leave",(m)=>{
+      const s=gs.current;
+      s.cats=s.cats.filter(c=>c.id!==m.clientId);
+      setOnlineCount(s.cats.filter(c=>!c.isSys).length);
+    });
+    channel.presence.subscribe("update",(m)=>{
+      if(m.clientId===clientId.current)return;
+      const cat=gs.current.cats.find(c=>c.id===m.clientId);
+      if(cat&&m.data.confessions)cat.confessions=m.data.confessions;
+      if(cat&&m.data.idle!==undefined)cat.idle=m.data.idle;
+    });
+    channel.subscribe("move",(msg)=>{
+      if(msg.clientId===clientId.current)return;
+      const cat=gs.current.cats.find(c=>c.id===msg.clientId);
+      if(!cat)return;
+      const d=msg.data;
+      cat.x=d.x;cat.y=d.y;cat.vx=d.vx;cat.vy=d.vy;cat.flip=d.flip;cat.state=d.state;
+    });
+    channel.subscribe("reset",()=>{
+      localStorage.removeItem("fikfuk_s");
+      const s=gs.current;
+      s.cats=[];s.myId=null;s.ready=false;
+      s.laserOn=false;s.laser={sx:-999,sy:-999,active:false};s.trail=[];
+      s.worldObjs=[];
+      setLaserOn(false);phaseRef.current="onboard";setPhase("onboard");
+    });
+    channel.presence.enter(myPresenceData());
+    myCat._updatePresence=()=>channel.presence.update(myPresenceData());
+    window.addEventListener("beforeunload",()=>channel.presence.leave());
+  }
+
+  useEffect(()=>{
+    const sess=loadSession();
+    if(sess)requestSpawn(sess.name,sess.palId,{confessions:sess.confessions,x:sess.x,y:sess.y});
+    else{setPhase("onboard");phaseRef.current="onboard";}
+  },[requestSpawn]);
+
+  useEffect(()=>{
+    const iv=setInterval(()=>{
+      setResetIn(nextResetMs());
+      if(nextResetMs()<=1000){
+        localStorage.removeItem("fikfuk_s");
+        channelRef.current?.publish("reset",{});
+      }
+    },1000);
+    return()=>clearInterval(iv);
+  },[]);
+
+  useEffect(()=>{
+    const onVis=()=>{
+      const s=gs.current;
+      const myCat=s.cats.find(c=>c.id===s.myId);
+      if(!myCat)return;
+      myCat.idle=document.hidden;
+      if(myCat._updatePresence)myCat._updatePresence();
+    };
+    document.addEventListener("visibilitychange",onVis);
+    return()=>document.removeEventListener("visibilitychange",onVis);
+  },[]);
+
+  useEffect(()=>{
+    if(phase!=="play")return;
+    const cv=canvasRef.current;if(!cv)return;
+    const ctx=cv.getContext("2d");
+    const resize=()=>{cv.width=cv.offsetWidth||window.innerWidth;cv.height=cv.offsetHeight||window.innerHeight;};
+    window.addEventListener("resize",resize);
+    const tick=()=>{
+      const s=gs.current;
+      if(!s.ready){animRef.current=requestAnimationFrame(tick);return;}
+      s.frame++;
+      const W=cv.width,H=cv.height;
+      const{laser,cam}=s;
+      const myCat=s.cats.find(c=>c.id===s.myId);
+      const laserWorld=laser.active?s2w(laser.sx,laser.sy):{wx:-9999,wy:-9999};
+      s.cats.forEach(cat=>{
+        if(cat.grabbed){cat.frame++;cat.state="sit";return;}
+        cat.frame++;
+        const dx=laserWorld.wx-(cat.x+5.5*P);
+        const dy=laserWorld.wy-(cat.y+5*P);
+        const dist=Math.hypot(dx,dy);
+        const inRange=cat.isOwn&&!cat.isSys&&!cat.idle&&laser.active&&dist<cat.range;
+        cat.showRange=inRange?Math.min(1,cat.showRange+0.08):Math.max(0,cat.showRange-0.05);
+        if(inRange){
+          cat.state="run";
+          const spd=dist<50?1.2:2.5;
+          cat.vx+=(dx/dist)*spd*0.1;cat.vy+=(dy/dist)*spd*0.1;
+          cat.flip=dx<0;
+          if(dist<70){cat.revealAlpha=Math.min(1,cat.revealAlpha+0.05);cat.revealTimer=80;}
+        } else if(cat.isOwn&&!cat.isSys){
+          cat.wanderTimer--;
+          if(cat.wanderTimer<=0){
+            cat.wanderAngle+=(Math.random()-0.5)*1.5;
+            cat.wanderTimer=80+Math.random()*140;
+            cat.state=Math.random()>0.45?"sit":"run";
+          }
+          if(cat.state==="run"){cat.vx+=Math.cos(cat.wanderAngle)*0.03;cat.vy+=Math.sin(cat.wanderAngle)*0.03;cat.flip=cat.vx<0;}
+        }
+        cat.vx*=0.86;cat.vy*=0.86;
+        const spd2=Math.hypot(cat.vx,cat.vy);
+        if(spd2>3.5){cat.vx=cat.vx/spd2*3.5;cat.vy=cat.vy/spd2*3.5;}
+        if(!cat.isSys){cat.x+=cat.vx;cat.y+=cat.vy;}
+        cat.x=Math.max(10,Math.min(WORLD_W-12*P,cat.x));
+        cat.y=Math.max(10,Math.min(WORLD_H-14*P,cat.y));
+        if(cat.revealTimer>0)cat.revealTimer--;
+        else cat.revealAlpha=Math.max(0,cat.revealAlpha-0.025);
+      });
+      s.worldObjs.forEach(obj=>{
+        obj.frame=(obj.frame||0)+1;
+        if(obj.type==="ufo"){
+          obj.x+=obj.vx;obj.y+=obj.vy;
+          if(obj.x<200||obj.x>WORLD_W-200)obj.vx*=-1;
+          if(obj.y<200||obj.y>WORLD_H-200)obj.vy*=-1;
+        }
+        if(obj.type==="wildcat"||obj.type==="mouse"){
+          obj.wanderTimer--;
+          if(obj.wanderTimer<=0){
+            obj.wanderAngle+=(Math.random()-0.5)*2;
+            obj.wanderTimer=40+Math.random()*80;
+            obj.flip=Math.random()>0.5;
+          }
+          const spd=obj.type==="mouse"?1.2:0.8;
+          obj.vx+=Math.cos(obj.wanderAngle)*spd*0.05;
+          obj.vy+=Math.sin(obj.wanderAngle)*spd*0.05;
+          obj.vx*=0.9;obj.vy*=0.9;
+          obj.x+=obj.vx;obj.y+=obj.vy;
+          obj.x=Math.max(100,Math.min(WORLD_W-100,obj.x));
+          obj.y=Math.max(100,Math.min(WORLD_H-100,obj.y));
+        }
+        if(obj.type==="human"){
+          obj.wanderTimer--;
+          if(obj.wanderTimer<=0){obj.wanderAngle+=(Math.random()-0.5)*1;obj.wanderTimer=200+Math.random()*300;}
+          obj.vx+=Math.cos(obj.wanderAngle)*0.02;
+          obj.vx*=0.95;obj.x+=obj.vx;
+          obj.x=Math.max(200,Math.min(WORLD_W-200,obj.x));
+        }
+        if(obj.type==="diablo"){
+          obj.wanderTimer--;
+          if(obj.wanderTimer<=0){obj.wanderAngle+=(Math.random()-0.5)*0.5;obj.wanderTimer=200+Math.random()*400;}
+          obj.vx+=Math.cos(obj.wanderAngle)*0.015;
+          obj.vy+=Math.sin(obj.wanderAngle)*0.015;
+          obj.vx*=0.98;obj.vy*=0.98;
+          obj.x+=obj.vx;obj.y+=obj.vy;
+          obj.x=Math.max(500,Math.min(WORLD_W-500,obj.x));
+          obj.y=Math.max(500,Math.min(WORLD_H-500,obj.y));
+          if(myCat){
+            const ddx=myCat.x-obj.x,ddy=myCat.y-obj.y;
+            const ddist=Math.hypot(ddx,ddy);
+            if(ddist<200){myCat.vx+=(ddx/ddist)*0.5;myCat.vy+=(ddy/ddist)*0.5;myCat.state="run";}
+          }
+        }
+        if(obj.type==="fossil"&&myCat){
+          const fdx=myCat.x-obj.x,fdy=myCat.y-obj.y;
+          if(Math.hypot(fdx,fdy)<60)obj.revealed=true;
+        }
+      });
+      if(myCat&&channelRef.current){
+        const now=Date.now();
+        if(now-moveThrottle.current>100){
+          moveThrottle.current=now;
+          channelRef.current.publish("move",{x:myCat.x,y:myCat.y,vx:myCat.vx,vy:myCat.vy,flip:myCat.flip,state:myCat.state});
+        }
+      }
+      if(s.frame%300===0&&myCat){
+        const sess=loadSession();
+        if(sess)saveSession({...sess,x:myCat.x,y:myCat.y,confessions:myCat.confessions});
+      }
+      ctx.fillStyle="#080810";ctx.fillRect(0,0,W,H);
+      ctx.save();
+      const bx=-cam.x,by=-cam.y;
+      ctx.strokeStyle="rgba(255,50,50,0.15)";ctx.lineWidth=3;
+      ctx.strokeRect(bx,by,WORLD_W,WORLD_H);
+      ctx.restore();
+      s.stars.forEach(st=>{
+        const sx=(st.x-cam.x*0.3+W*10)%W;
+        const sy=(st.y-cam.y*0.3+H*10)%H;
+        ctx.beginPath();ctx.arc(sx,sy,st.r,0,Math.PI*2);
+        ctx.fillStyle=`rgba(200,200,255,${st.a+Math.sin(s.frame*st.speed)*0.12})`;ctx.fill();
+      });
+      for(let gy=0;gy<H;gy+=4){ctx.fillStyle="rgba(0,0,0,0.06)";ctx.fillRect(0,gy,W,2);}
+      s.worldObjs.forEach(obj=>{
+        const{sx,sy}=w2s(obj.x,obj.y);
+        if(sx<-100||sx>W+100||sy<-100||sy>H+200)return;
+        if(obj.type==="ufo")drawUFO(ctx,sx,sy,obj.frame,obj.confession);
+        if(obj.type==="fossil")drawFossil(ctx,sx,sy,obj.frame,obj.revealed);
+        if(obj.type==="wildcat")drawWildCat(ctx,sx,sy,obj.frame,obj.pal,obj.flip);
+        if(obj.type==="mouse")drawMouse(ctx,sx,sy,obj.frame,obj.flip);
+        if(obj.type==="human")drawHuman(ctx,sx,sy,obj.frame);
+        if(obj.type==="diablo")drawDiablo(ctx,sx,sy,obj.frame);
+      });
+      s.cats.forEach(c=>{
+        const{sx,sy}=w2s(c.x,c.y);
+        if(sx<-60||sx>W+60||sy<-60||sy>H+60)return;
+        if(!c.grabbed&&!c.isSys){
+          ctx.save();ctx.globalAlpha=c.idle?0.08:0.15;ctx.fillStyle="#000";
+          ctx.beginPath();ctx.ellipse(sx+5.5*P,sy+13*P,14,4,0,0,Math.PI*2);ctx.fill();ctx.restore();
+        }
+        drawCat(ctx,sx,sy,P,c.frame,c.pal,c.flip,c.state,c.grabbed,c.isOwn,c.isSys,c.idle);
+        drawBubble(ctx,{...c,x:sx,y:sy},P);
+      });
+      if(laser.active&&!s.camDrag)drawLaser(ctx,laser.sx,laser.sy,s.trail,s.frame);
+      const MM_W=120,MM_H=80,MM_X=W-MM_W-12,MM_Y=H-MM_H-70;
+      ctx.save();
+      ctx.fillStyle="rgba(0,0,0,0.6)";ctx.strokeStyle="rgba(255,50,50,0.3)";ctx.lineWidth=1;
+      ctx.fillRect(MM_X,MM_Y,MM_W,MM_H);ctx.strokeRect(MM_X,MM_Y,MM_W,MM_H);
+      const vpx=MM_X+(cam.x/WORLD_W)*MM_W;
+      const vpy=MM_Y+(cam.y/WORLD_H)*MM_H;
+      const vpw=(W/WORLD_W)*MM_W;
+      const vph=(H/WORLD_H)*MM_H;
+      ctx.strokeStyle="rgba(255,255,255,0.2)";ctx.strokeRect(vpx,vpy,vpw,vph);
+      s.cats.filter(c=>!c.isSys).forEach(c=>{
+        const mx=MM_X+(c.x/WORLD_W)*MM_W;
+        const my=MM_Y+(c.y/WORLD_H)*MM_H;
+        ctx.fillStyle=c.isOwn?"#ff4444":"rgba(150,150,255,0.8)";
+        ctx.beginPath();ctx.arc(mx,my,c.isOwn?3:2,0,Math.PI*2);ctx.fill();
+      });
+      s.worldObjs.forEach(obj=>{
+        const mx=MM_X+(obj.x/WORLD_W)*MM_W;
+        const my=MM_Y+(obj.y/WORLD_H)*MM_H;
+        if(obj.type==="ufo"){ctx.fillStyle="rgba(100,200,255,0.5)";ctx.fillRect(mx-1,my-1,2,2);}
+        if(obj.type==="diablo"){ctx.fillStyle="rgba(255,0,0,0.8)";ctx.beginPath();ctx.arc(mx,my,3,0,Math.PI*2);ctx.fill();}
+      });
+      ctx.restore();
+      animRef.current=requestAnimationFrame(tick);
+    };
+    animRef.current=requestAnimationFrame(tick);
+    return()=>{cancelAnimationFrame(animRef.current);window.removeEventListener("resize",resize);};
+  },[phase]);
+
+  const getPos=(e)=>{
+    const r=canvasRef.current.getBoundingClientRect();
+    const src=e.touches?e.touches[0]:e;
+    return{sx:src.clientX-r.left,sy:src.clientY-r.top};
+  };
+  const catAtScreen=(sx,sy)=>{
+    const s=gs.current;
+    for(let i=s.cats.length-1;i>=0;i--){
+      const c=s.cats[i];
+      const{sx:cx,sy:cy}=w2s(c.x,c.y);
+      if(Math.hypot(sx-(cx+5.5*P),sy-(cy+5*P))<28)return c;
+    }
+    return null;
+  };
+  const onPointerDown=useCallback((e)=>{
+    if(phaseRef.current!=="play")return;
+    const{sx,sy}=getPos(e);
+    const s=gs.current;
+    const cat=catAtScreen(sx,sy);
+    const now=Date.now();
+    if(cat){
+      if(lastTap.current.id===cat.id&&now-lastTap.current.time<400){
+        setPanel({catId:cat.id,name:cat.name,confessions:[...cat.confessions],isOwn:cat.isOwn,isSys:cat.isSys,sysType:cat.sysType,eye:cat.pal.eye});
+        lastTap.current={id:null,time:0};return;
+      }
+      lastTap.current={id:cat.id,time:now};
+      if(cat.isOwn&&!cat.isSys){
+        const wpos=s2w(sx,sy);
+        s.drag={catId:cat.id,offX:wpos.wx-cat.x,offY:wpos.wy-cat.y};
+        cat.grabbed=true;cat.vx=0;cat.vy=0;
+      }
+      return;
+    }
+    lastTap.current={id:null,time:0};
+    if(s.laserOn){s.laser={sx,sy,active:true};}
+    else{s.camDrag={startSx:sx,startSy:sy,startCamX:s.cam.x,startCamY:s.cam.y};}
+  },[]);
+  const onPointerMove=useCallback((e)=>{
+    if(phaseRef.current!=="play")return;
+    const{sx,sy}=getPos(e);
+    const s=gs.current;
+    if(s.drag){
+      const wpos=s2w(sx,sy);
+      const cat=s.cats.find(c=>c.id===s.drag.catId);
+      if(cat){cat.x=wpos.wx-s.drag.offX;cat.y=wpos.wy-s.drag.offY;}
+      return;
+    }
+    if(s.laserOn&&s.laser.active){
+      s.laser={sx,sy,active:true};
+      s.trail.push({x:sx,y:sy});
+      if(s.trail.length>24)s.trail.shift();
+      return;
+    }
+    if(s.camDrag){
+      const dx=sx-s.camDrag.startSx;
+      const dy=sy-s.camDrag.startSy;
+      s.cam.x=Math.max(0,Math.min(WORLD_W-canvasRef.current.width,s.camDrag.startCamX-dx));
+      s.cam.y=Math.max(0,Math.min(WORLD_H-canvasRef.current.height,s.camDrag.startCamY-dy));
+    }
+  },[]);
+  const onPointerUp=useCallback(()=>{
+    const s=gs.current;
+    if(s.drag){const cat=s.cats.find(c=>c.id===s.drag.catId);if(cat)cat.grabbed=false;s.drag=null;}
+    s.camDrag=null;
+    if(!s.laserOn){s.laser.active=false;s.trail=[];}
+  },[]);
+  const onPointerLeave=useCallback(()=>{
+    const s=gs.current;
+    if(!s.drag){s.laser.active=false;s.trail=[];s.camDrag=null;}
+  },[]);
+  const toggleLaser=useCallback(()=>{
+    const next=!gs.current.laserOn;
+    gs.current.laserOn=next;
+    if(!next){gs.current.laser.active=false;gs.current.trail=[];}
+    setLaserOn(next);
+  },[]);
+  const centerOnCat=useCallback(()=>{
+    const s=gs.current;
+    const cv=canvasRef.current;
+    const myCat=s.cats.find(c=>c.id===s.myId);
+    if(!myCat||!cv)return;
+    s.cam={x:myCat.x-cv.width/2,y:myCat.y-cv.height/2};
+  },[]);
+  const startCooldown=()=>{
+    setCooldown(COOLDOWN_SEC);
+    const iv=setInterval(()=>setCooldown(p=>{if(p<=1){clearInterval(iv);return 0;}return p-1;}),1000);
+  };
+  const submitConfession=()=>{
+    if(!inputVal.trim()||cooldown>0)return;
+    const s=gs.current;
+    const myCat=s.cats.find(c=>c.id===s.myId);
+    if(!myCat)return;
+    myCat.confessions.push(inputVal.trim().slice(0,28));
+    if(myCat.confessions.length>5)myCat.confessions.shift();
+    const sess=loadSession();
+    if(sess)saveSession({...sess,confessions:myCat.confessions});
+    if(myCat._updatePresence)myCat._updatePresence();
+    setInputVal("");setShowInput(false);
+    startCooldown();
+  };
+  const panelAccent=panel?.isSys?(panel.sysType==="privacy"?"#7777ff":"#44cc44"):(panel?.isOwn?"#ff3232":"rgba(120,120,255,0.7)");
+  return(
+    <div style={{position:"fixed",inset:0,background:"#080810",fontFamily:ff,overflow:"hidden"}}>
+      <style>{\`
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        html,body,#root{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#080810;}
+        *{box-sizing:border-box;}
+        .pal-swatch{cursor:pointer;transition:transform .12s,box-shadow .15s;}
+        .pal-swatch:hover{transform:scale(1.12);}
+        .hbtn{transition:background .15s,box-shadow .15s;cursor:pointer;font-family:'Press Start 2P',monospace;}
+        .hbtn:hover{background:rgba(255,50,50,0.2)!important;box-shadow:0 0 20px rgba(255,50,50,0.55)!important;}
+      \`}</style>
+      <canvas ref={canvasRef}
+        style={{position:"absolute",inset:0,width:"100%",height:"100%",display:"block",touchAction:"none",
+          cursor:phase==="play"?(laserOn?"none":"grab"):"default",
+          opacity:phase==="play"?1:0,pointerEvents:phase==="play"?"auto":"none"}}
+        onMouseDown={onPointerDown} onMouseMove={onPointerMove}
+        onMouseUp={onPointerUp} onMouseLeave={onPointerLeave}
+        onTouchStart={e=>{e.preventDefault();onPointerDown(e);}}
+        onTouchMove={e=>{e.preventDefault();onPointerMove(e);}}
+        onTouchEnd={onPointerUp}
+      />
+      {phase==="loading"&&(
+        <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"#080810",zIndex:100}}>
+          <span style={{fontSize:10,color:"#ff6666"}}>loading...</span>
+        </div>
+      )}
+      {phase==="onboard"&&(
+        <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",background:"#080810",zIndex:100,padding:20}}>
+          <div style={{background:"#0d0d1a",border:"2px solid #ff3232",boxShadow:"0 0 40px rgba(255,50,50,0.2)",padding:28,maxWidth:360,width:"100%",display:"flex",flexDirection:"column",gap:22}}>
+            <div>
+              <div style={{fontSize:12,color:"#ff4444",letterSpacing:2,textShadow:"0 0 18px rgba(255,50,50,0.55)"}}>fikfuk.wtf</div>
+              <div style={{fontSize:6,color:"rgba(255,255,255,0.25)",marginTop:8,lineHeight:2}}>anonymous · resets every 3 hrs · 10k world</div>
+            </div>
+            <div style={{width:"100%",height:1,background:"rgba(255,50,50,0.2)"}}/>
+            <div>
+              <div style={{fontSize:7,color:"rgba(255,100,100,0.7)",marginBottom:10}}>// name your cat</div>
+              <input maxLength={12} value={pickName} autoFocus
+                onChange={e=>setPickName(e.target.value)}
+                onKeyDown={e=>{if(e.key==="Enter"&&pickName.trim())requestSpawn(pickName.trim(),pickPal);}}
+                placeholder="max 12 chars..."
+                style={{background:"transparent",border:"none",borderBottom:"1px solid rgba(255,50,50,0.4)",color:"#fff",fontFamily:ff,fontSize:9,padding:"6px 2px",outline:"none",width:"100%"}}
+              />
+            </div>
+            <div>
+              <div style={{fontSize:7,color:"rgba(255,100,100,0.7)",marginBottom:10}}>// pick a coat</div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {PALETTES.map(p=>(
+                  <div key={p.id} className="pal-swatch" onClick={()=>setPickPal(p.id)}
+                    style={{width:34,height:34,background:p.body,position:"relative",border:`2px solid ${pickPal===p.id?"#ff3232":"rgba(255,255,255,0.1)"}`,boxShadow:pickPal===p.id?"0 0 14px rgba(255,50,50,0.65)":"none"}}>
+                    {pickPal===p.id&&<div style={{position:"absolute",inset:0,background:"rgba(255,50,50,0.15)"}}/>}
+                    <div style={{position:"absolute",bottom:3,right:3,width:8,height:8,background:p.eye,border:"1px solid rgba(0,0,0,0.5)"}}/>
+                  </div>
+                ))}
+              </div>
+              <div style={{fontSize:6,color:"rgba(255,255,255,0.25)",marginTop:8}}>{PALETTES[pickPal].label}</div>
+            </div>
+            <button className="hbtn"
+              onClick={()=>{if(pickName.trim())requestSpawn(pickName.trim(),pickPal);}}
+              style={{fontSize:8,padding:"13px",background:pickName.trim()?"rgba(255,50,50,0.18)":"rgba(30,30,50,0.5)",border:`2px solid ${pickName.trim()?"#ff3232":"rgba(255,50,50,0.2)"}`,color:pickName.trim()?"#ff7777":"rgba(255,100,100,0.3)",boxShadow:pickName.trim()?"0 0 14px rgba(255,50,50,0.3)":"none",cursor:pickName.trim()?"pointer":"not-allowed",letterSpacing:1}}>
+              spawn my cat →
+            </button>
+          </div>
+        </div>
+      )}
+      {phase==="play"&&(<>
+        <div style={{position:"fixed",top:0,left:0,right:0,zIndex:10,pointerEvents:"none",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 16px",background:"linear-gradient(to bottom,rgba(8,8,16,0.85),transparent)"}}>
+          <span style={{fontSize:9,color:"#ff4444",textShadow:"0 0 12px rgba(255,50,50,0.55)",letterSpacing:1}}>fikfuk.wtf</span>
+          <div style={{display:"flex",gap:12,alignItems:"center"}}>
+            <span style={{fontSize:7,color:"rgba(255,255,255,0.3)"}}>🐾 {onlineCount} online</span>
+            <span style={{fontSize:7,color:"rgba(255,255,255,0.22)"}}>resets {fmtCountdown(resetIn)}</span>
+          </div>
+        </div>
+        <button className="hbtn" onClick={centerOnCat}
+          style={{position:"fixed",top:50,right:16,zIndex:10,fontSize:7,padding:"6px 10px",background:"rgba(8,8,16,0.7)",border:"1px solid rgba(255,50,50,0.3)",color:"rgba(255,100,100,0.6)"}}>
+          find me
+        </button>
+        <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:20,display:"flex",gap:10,alignItems:"center",justifyContent:"center",padding:"12px 16px 20px",background:"linear-gradient(to top,rgba(8,8,16,0.92),transparent)"}}>
+          <button className="hbtn" onClick={toggleLaser}
+            style={{fontSize:8,background:laserOn?"rgba(255,50,50,0.22)":"transparent",border:`2px solid ${laserOn?"#ff3232":"rgba(255,50,50,0.45)"}`,color:laserOn?"#ff4444":"rgba(255,100,100,0.6)",padding:"10px 13px",boxShadow:laserOn?"0 0 18px rgba(255,50,50,0.5)":"none"}}>
+            {laserOn?"laser on":"laser off"}
+          </button>
+          {!showInput&&(
+            <button className="hbtn" onClick={()=>{if(cooldown===0)setShowInput(true);}}
+              style={{fontSize:8,background:cooldown>0?"rgba(40,40,60,0.6)":"transparent",border:`2px solid ${cooldown>0?"rgba(255,50,50,0.25)":"#ff3232"}`,color:cooldown>0?"rgba(255,100,100,0.4)":"#ff6666",padding:"10px 14px",boxShadow:cooldown>0?"none":"0 0 14px rgba(255,50,50,0.35)",cursor:cooldown>0?"not-allowed":"pointer"}}>
+              {cooldown>0?`${cooldown}s`:"+ confess"}
+            </button>
+          )}
+        </div>
+        {showInput&&(
+          <div style={{position:"fixed",bottom:0,left:0,right:0,background:"rgba(8,8,16,0.97)",border:"2px solid #ff3232",borderBottom:"none",boxShadow:"0 0 30px rgba(255,50,50,0.25)",padding:"16px",zIndex:30,display:"flex",flexDirection:"column",gap:10}}>
+            <span style={{fontSize:8,color:"#ff6666"}}>// confess to your cat</span>
+            <input autoFocus maxLength={28} value={inputVal}
+              onChange={e=>setInputVal(e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&submitConfession()}
+              placeholder="max 28 chars..."
+              style={{background:"transparent",border:"none",borderBottom:"1px solid rgba(255,50,50,0.35)",color:"#fff",fontFamily:ff,fontSize:9,padding:"6px 2px",outline:"none",width:"100%"}}
+            />
+            <div style={{fontSize:7,color:"rgba(255,255,255,0.22)"}}>only your cat carries this · 30s cooldown</div>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <button onClick={()=>setShowInput(false)} style={{background:"transparent",border:"1px solid rgba(255,255,255,0.15)",color:"rgba(255,255,255,0.35)",fontFamily:ff,fontSize:7,padding:"6px 10px",cursor:"pointer"}}>cancel</button>
+              <button onClick={submitConfession} style={{background:"rgba(255,50,50,0.15)",border:"1px solid #ff3232",color:"#ff7777",fontFamily:ff,fontSize:7,padding:"6px 12px",cursor:"pointer",boxShadow:"0 0 8px rgba(255,50,50,0.3)"}}>send</button>
+            </div>
+          </div>
+        )}
+      </>)}
+      {panel&&(
+        <div style={{position:"fixed",inset:0,zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.65)"}} onClick={()=>setPanel(null)}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"#0d0d1a",border:`2px solid ${panelAccent}`,boxShadow:`0 0 40px ${panelAccent}55`,padding:"20px",minWidth:280,maxWidth:"90vw",display:"flex",flexDirection:"column",gap:12}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:8,color:panelAccent}}>🐾 {panel.name}{panel.isOwn&&!panel.isSys?" (you)":""}</span>
+              <button onClick={()=>setPanel(null)} style={{background:"transparent",border:"none",color:"rgba(255,100,100,0.5)",fontFamily:ff,fontSize:8,cursor:"pointer"}}>x</button>
+            </div>
+            <div style={{width:"100%",height:1,background:`${panelAccent}44`}}/>
+            {!panel.confessions.length
+              ?<span style={{fontSize:7,color:"rgba(255,255,255,0.3)"}}>no confessions yet</span>
+              :panel.confessions.map((c,i)=>(
+                <div key={i} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:i<panel.confessions.length-1?`1px solid ${panelAccent}22`:"none"}}>
+                  <span style={{fontSize:7,color:`${panelAccent}99`,minWidth:16}}>{i+1}</span>
+                  <span style={{fontSize:8,color:"#ffcccc",lineHeight:1.8}}>{c}</span>
+                </div>
+              ))
+            }
+            {panel.sysType==="about"&&(
+              <div style={{display:"flex",flexDirection:"column",gap:8,marginTop:4}}>
+                <div style={{fontSize:7,color:"#44cc44"}}>donate via solana</div>
+                <div onClick={()=>navigator.clipboard?.writeText("3oDULkLmFSXppKGyKLQjE32MSSmDcyAcZL2jWy94rbp2")}
+                  style={{fontFamily:"monospace",fontSize:7,color:"rgba(100,255,100,0.7)",background:"rgba(0,255,0,0.06)",border:"1px solid rgba(68,204,68,0.25)",padding:"8px",wordBreak:"break-all",lineHeight:1.8,cursor:"pointer",userSelect:"all"}}>
+                  3oDULkLmFSXppKGyKLQjE32MSSmDcyAcZL2jWy94rbp2
+                </div>
+                <div style={{fontSize:6,color:"rgba(255,255,255,0.2)"}}>tap to copy</div>
+              </div>
+            )}
+            <div style={{fontSize:7,color:"rgba(255,255,255,0.18)",textAlign:"right"}}>tap outside to close</div>
+          </div>
+        </div>
+      )}
+      <SpeedInsights/>
+    </div>
+  );
+}
