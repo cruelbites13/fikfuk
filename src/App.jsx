@@ -131,13 +131,17 @@ function drawCat(ctx,x,y,p,frame,pal,flip,state,grabbed,isOwn,isSys,idle){
 }
 
 // ─── World objects renderer ───────────────────────────────────────────────────
-function drawUFO(ctx,x,y,frame,confession){
+function drawUFO(ctx,x,y,frame,confession,hitCount){
   ctx.save();ctx.translate(x,y);
   const hov=Math.sin(frame*0.04)*4;
-  // beam
-  if(confession){
-    ctx.fillStyle="rgba(150,255,150,0.08)";
-    ctx.beginPath();ctx.moveTo(-4,hov+8);ctx.lineTo(-20,60);ctx.lineTo(20,60);ctx.lineTo(4,hov+8);ctx.fill();
+  // tractor beam always visible
+  ctx.fillStyle="rgba(100,200,255,0.06)";
+  ctx.beginPath();ctx.moveTo(-4,hov+8);ctx.lineTo(-20,60);ctx.lineTo(20,60);ctx.lineTo(4,hov+8);ctx.fill();
+  // hit flash
+  if(hitCount>0){
+    const flashAlpha=Math.max(0,0.4-hitCount*0.01);
+    ctx.fillStyle=`rgba(255,100,100,${flashAlpha})`;
+    ctx.beginPath();ctx.ellipse(0,hov,30,12,0,0,Math.PI*2);ctx.fill();
   }
   // body
   ctx.fillStyle="#2a2a4a";ctx.beginPath();ctx.ellipse(0,hov,28,10,0,0,Math.PI*2);ctx.fill();
@@ -165,21 +169,29 @@ function drawUFO(ctx,x,y,frame,confession){
   }
 }
 
-function drawFossil(ctx,x,y,frame,revealed){
+function drawFossil(ctx,x,y,frame,revealed,sitTimer,confession){
   ctx.save();ctx.translate(x,y);
   const alpha=revealed?0.9:0.3+Math.sin(frame*0.02)*0.1;
   ctx.globalAlpha=alpha;
-  // ground mark
   ctx.fillStyle="#3a2a1a";ctx.beginPath();ctx.ellipse(0,0,22,12,0,0,Math.PI*2);ctx.fill();
   ctx.strokeStyle="#6a4a2a";ctx.lineWidth=1;ctx.stroke();
-  // bone pattern
   ctx.fillStyle="#d4c4a0";
   ctx.fillRect(-10,-3,20,6);
   ctx.beginPath();ctx.arc(-12,0,5,0,Math.PI*2);ctx.fill();
   ctx.beginPath();ctx.arc(12,0,5,0,Math.PI*2);ctx.fill();
-  if(revealed){
+  // dig progress bar
+  if(!revealed&&sitTimer>0){
+    const pct=Math.min(sitTimer/180,1);
+    ctx.globalAlpha=0.8;
+    ctx.fillStyle="rgba(0,0,0,0.5)";ctx.fillRect(-20,16,40,5);
+    ctx.fillStyle="#f5c842";ctx.fillRect(-20,16,40*pct,5);
+  }
+  if(revealed&&confession){
     ctx.font=`6px ${ff}`;ctx.fillStyle="#ffddaa";
-    ctx.globalAlpha=0.8;ctx.fillText("fossil",- 10,18);
+    ctx.globalAlpha=0.9;
+    const tw=ctx.measureText(confession).width;
+    ctx.fillStyle="rgba(0,0,0,0.6)";ctx.fillRect(-tw/2-4,16,tw+8,14);
+    ctx.fillStyle="#ffddaa";ctx.fillText(confession,-tw/2,27);
   }
   ctx.restore();
 }
@@ -224,7 +236,7 @@ function drawHuman(ctx,x,y,frame){
   ctx.restore();
 }
 
-function drawDiablo(ctx,x,y,frame){
+function drawDiablo(ctx,x,y,frame,hp=10){
   ctx.save();ctx.translate(x,y);
   const pulse=Math.sin(frame*0.08)*0.3;
   ctx.globalAlpha=0.85+pulse;
@@ -246,6 +258,10 @@ function drawDiablo(ctx,x,y,frame){
   ctx.fillStyle="rgba(80,0,0,0.6)";
   ctx.beginPath();ctx.moveTo(-10*P,0);ctx.lineTo(-30*P,-20*P);ctx.lineTo(-10*P,8*P);ctx.fill();
   ctx.beginPath();ctx.moveTo(10*P,0);ctx.lineTo(30*P,-20*P);ctx.lineTo(10*P,8*P);ctx.fill();
+  // HP bar
+  ctx.globalAlpha=0.85;
+  ctx.fillStyle="rgba(0,0,0,0.6)";ctx.fillRect(-20*P,18*P,40*P,5);
+  ctx.fillStyle="#ff2222";ctx.fillRect(-20*P,18*P,40*P*(hp/10),5);
   ctx.restore();
 }
 
@@ -312,80 +328,78 @@ const NPC_CONFESSIONS=[
   "I miss someone I shouldn't","I lied about being ok","I still check their profile",
 ];
 
-function generateWorldObjects(){
-  const objs=[];
+// ── Spawn rates (max alive at once) ──────────────────────────────────────────
+const SPAWN_LIMITS = { ufo:2, fossil:3, wildcat:3, mouse:5, human:1, diablo:1 };
+const SPAWN_INTERVALS = { ufo:30, fossil:45, wildcat:20, mouse:15, human:60, diablo:180 }; // seconds
+
+function spawnObj(type, existingObjs){
   const margin=500;
-  // UFOs - 15 scattered
-  for(let i=0;i<15;i++){
-    objs.push({
-      type:"ufo", id:`ufo_${i}`,
-      x:margin+Math.random()*(WORLD_W-margin*2),
-      y:margin+Math.random()*(WORLD_H-margin*2),
-      confession:NPC_CONFESSIONS[Math.floor(Math.random()*NPC_CONFESSIONS.length)],
-      vx:(Math.random()-0.5)*0.3, vy:(Math.random()-0.5)*0.1,
-      frame:Math.floor(Math.random()*200),
-    });
-  }
-  // Fossils - 25 buried
-  for(let i=0;i<25;i++){
-    objs.push({
-      type:"fossil", id:`fossil_${i}`,
-      x:margin+Math.random()*(WORLD_W-margin*2),
-      y:margin+Math.random()*(WORLD_H-margin*2),
-      confession:NPC_CONFESSIONS[Math.floor(Math.random()*NPC_CONFESSIONS.length)],
-      revealed:false, frame:0,
-    });
-  }
-  // Wild cats - 20
-  for(let i=0;i<20;i++){
+  const rx=()=>margin+Math.random()*(WORLD_W-margin*2);
+  const ry=()=>margin+Math.random()*(WORLD_H-margin*2);
+  const count=existingObjs.filter(o=>o.type===type).length;
+  if(count>=SPAWN_LIMITS[type]) return null;
+  const id=`${type}_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+  if(type==="ufo") return{
+    type:"ufo",id,x:rx(),y:ry(),
+    confession:NPC_CONFESSIONS[Math.floor(Math.random()*NPC_CONFESSIONS.length)],
+    vx:(Math.random()-0.5)*0.4,vy:(Math.random()-0.5)*0.15,
+    frame:0,hitCount:0,active:true,
+  };
+  if(type==="fossil") return{
+    type:"fossil",id,x:rx(),y:ry(),
+    confession:NPC_CONFESSIONS[Math.floor(Math.random()*NPC_CONFESSIONS.length)],
+    revealed:false,sitTimer:0,frame:0,
+  };
+  if(type==="wildcat"){
     const palId=Math.floor(Math.random()*PALETTES.length);
-    objs.push({
-      type:"wildcat", id:`wc_${i}`,
-      x:margin+Math.random()*(WORLD_W-margin*2),
-      y:margin+Math.random()*(WORLD_H-margin*2),
-      pal:{...PALETTES[palId]},
-      flip:Math.random()>0.5,
-      vx:(Math.random()-0.5)*1.5, vy:(Math.random()-0.5)*1.5,
+    return{
+      type:"wildcat",id,x:rx(),y:ry(),
+      pal:{...PALETTES[palId]},flip:Math.random()>0.5,
+      vx:(Math.random()-0.5)*1.5,vy:(Math.random()-0.5)*1.5,
       frame:Math.floor(Math.random()*200),
       wanderAngle:Math.random()*Math.PI*2,
       wanderTimer:Math.floor(Math.random()*120),
-    });
+    };
   }
-  // Mice - 30
-  for(let i=0;i<30;i++){
-    objs.push({
-      type:"mouse", id:`mouse_${i}`,
-      x:margin+Math.random()*(WORLD_W-margin*2),
-      y:margin+Math.random()*(WORLD_H-margin*2),
-      flip:Math.random()>0.5,
-      vx:(Math.random()-0.5)*2, vy:(Math.random()-0.5)*2,
-      frame:Math.floor(Math.random()*200),
-      wanderAngle:Math.random()*Math.PI*2,
-      wanderTimer:Math.floor(Math.random()*60),
-    });
-  }
-  // Human NPC - 3
-  for(let i=0;i<3;i++){
-    objs.push({
-      type:"human", id:`human_${i}`,
-      x:margin+Math.random()*(WORLD_W-margin*2),
-      y:margin+Math.random()*(WORLD_H-margin*2),
-      vx:(Math.random()-0.5)*0.5, vy:0,
-      frame:Math.floor(Math.random()*200),
-      wanderAngle:Math.random()*Math.PI*2,
-      wanderTimer:200+Math.floor(Math.random()*300),
-      dropTimer:0,
-    });
-  }
-  // Diablo - 1 boss
-  objs.push({
-    type:"diablo", id:"diablo_0",
-    x:WORLD_W/2+Math.random()*500-250,
-    y:WORLD_H/2+Math.random()*500-250,
-    vx:0.2, vy:0.1, frame:0,
+  if(type==="mouse") return{
+    type:"mouse",id,x:rx(),y:ry(),flip:Math.random()>0.5,
+    vx:(Math.random()-0.5)*2,vy:(Math.random()-0.5)*2,
+    frame:Math.floor(Math.random()*200),
+    wanderAngle:Math.random()*Math.PI*2,
+    wanderTimer:Math.floor(Math.random()*60),
+    alive:true,
+  };
+  if(type==="human") return{
+    type:"human",id,x:rx(),y:ry(),
+    vx:(Math.random()-0.5)*0.5,vy:0,
+    frame:Math.floor(Math.random()*200),
+    wanderAngle:Math.random()*Math.PI*2,
+    wanderTimer:200+Math.floor(Math.random()*300),
+    dropTimer:600,// drop confession every 600 frames ~10s
+    breadcrumbs:[],
+  };
+  if(type==="diablo") return{
+    type:"diablo",id:"diablo_0",
+    x:WORLD_W/2+Math.random()*2000-1000,
+    y:WORLD_H/2+Math.random()*2000-1000,
+    vx:0.2,vy:0.1,frame:0,
     wanderAngle:Math.random()*Math.PI*2,
     wanderTimer:300,
-  });
+    hp:10,// needs 10 laser hits to defeat
+    hitCooldown:0,
+  };
+  return null;
+}
+
+function generateWorldObjects(){
+  const objs=[];
+  // start with minimal set
+  const obj=spawnObj("ufo",objs); if(obj)objs.push(obj);
+  const obj2=spawnObj("fossil",objs); if(obj2)objs.push(obj2);
+  const obj3=spawnObj("wildcat",objs); if(obj3)objs.push(obj3);
+  const obj4=spawnObj("mouse",objs); if(obj4)objs.push(obj4);
+  const obj5=spawnObj("human",objs); if(obj5)objs.push(obj5);
+  const obj6=spawnObj("diablo",objs); if(obj6)objs.push(obj6);
   return objs;
 }
 
@@ -631,55 +645,195 @@ export default function App(){
         if(cat.revealTimer>0)cat.revealTimer--;
         else cat.revealAlpha=Math.max(0,cat.revealAlpha-0.025);
       });
+      // ── spawn new objects over time ──
+      if(s.frame%60===0){
+        const types=["ufo","fossil","wildcat","mouse","human","diablo"];
+        types.forEach(type=>{
+          const interval=SPAWN_INTERVALS[type]*60;
+          if(s.frame%(interval)===0){
+            const newObj=spawnObj(type,s.worldObjs);
+            if(newObj)s.worldObjs.push(newObj);
+          }
+        });
+      }
+
+      // ── laser hit detection on UFO ──
+      const laserWx=laser.active?laserWorld.wx:-9999;
+      const laserWy=laser.active?laserWorld.wy:-9999;
+
+      const toRemove=new Set();
+      const toAdd=[];
+
       s.worldObjs.forEach(obj=>{
         obj.frame=(obj.frame||0)+1;
+
+        // UFO - drifts, laser shoots it, drops confession
         if(obj.type==="ufo"){
           obj.x+=obj.vx;obj.y+=obj.vy;
           if(obj.x<200||obj.x>WORLD_W-200)obj.vx*=-1;
           if(obj.y<200||obj.y>WORLD_H-200)obj.vy*=-1;
+          // laser hit
+          if(laser.active&&Math.hypot(laserWx-obj.x,laserWy-obj.y)<40){
+            obj.hitCount=(obj.hitCount||0)+1;
+            if(obj.hitCount>30){
+              // drop confession as breadcrumb
+              toAdd.push({
+                type:"breadcrumb",id:`bc_${Date.now()}`,
+                x:obj.x,y:obj.y,
+                text:obj.confession,
+                life:600,frame:0,
+              });
+              toRemove.add(obj.id);
+            }
+          }
         }
-        if(obj.type==="wildcat"||obj.type==="mouse"){
+
+        // Fossil - cat sits nearby to dig, reveals confession
+        if(obj.type==="fossil"&&myCat){
+          const fdist=Math.hypot(myCat.x-obj.x,myCat.y-obj.y);
+          if(fdist<60){
+            obj.sitTimer=(obj.sitTimer||0)+1;
+            if(obj.sitTimer>180) obj.revealed=true; // 3 seconds
+          } else {
+            obj.sitTimer=Math.max(0,(obj.sitTimer||0)-1);
+          }
+        }
+
+        // Wild cat - wanders, bumps player cat
+        if(obj.type==="wildcat"){
           obj.wanderTimer--;
           if(obj.wanderTimer<=0){
             obj.wanderAngle+=(Math.random()-0.5)*2;
             obj.wanderTimer=40+Math.random()*80;
             obj.flip=Math.random()>0.5;
           }
-          const spd=obj.type==="mouse"?1.2:0.8;
-          obj.vx+=Math.cos(obj.wanderAngle)*spd*0.05;
-          obj.vy+=Math.sin(obj.wanderAngle)*spd*0.05;
+          obj.vx+=Math.cos(obj.wanderAngle)*0.8*0.05;
+          obj.vy+=Math.sin(obj.wanderAngle)*0.8*0.05;
           obj.vx*=0.9;obj.vy*=0.9;
           obj.x+=obj.vx;obj.y+=obj.vy;
           obj.x=Math.max(100,Math.min(WORLD_W-100,obj.x));
           obj.y=Math.max(100,Math.min(WORLD_H-100,obj.y));
+          // bump player cat
+          if(myCat){
+            const bd=Math.hypot(myCat.x-obj.x,myCat.y-obj.y);
+            if(bd<30){
+              myCat.vx+=(myCat.x-obj.x)/bd*2;
+              myCat.vy+=(myCat.y-obj.y)/bd*2;
+            }
+          }
         }
+
+        // Mouse - fast wander, cat chases and catches it
+        if(obj.type==="mouse"){
+          // flee from nearby cats
+          let flee=false;
+          if(myCat){
+            const md=Math.hypot(myCat.x-obj.x,myCat.y-obj.y);
+            if(md<120){
+              flee=true;
+              obj.wanderAngle=Math.atan2(obj.y-myCat.y,obj.x-myCat.x);
+              // caught!
+              if(md<25){
+                toRemove.add(obj.id);
+                // speed boost for player cat
+                myCat._boostTimer=300;
+              }
+            }
+          }
+          if(!flee){
+            obj.wanderTimer--;
+            if(obj.wanderTimer<=0){
+              obj.wanderAngle+=(Math.random()-0.5)*2;
+              obj.wanderTimer=40+Math.random()*60;
+            }
+          }
+          obj.vx+=Math.cos(obj.wanderAngle)*1.2*0.08;
+          obj.vy+=Math.sin(obj.wanderAngle)*1.2*0.08;
+          obj.vx*=0.88;obj.vy*=0.88;
+          obj.x+=obj.vx;obj.y+=obj.vy;
+          obj.x=Math.max(100,Math.min(WORLD_W-100,obj.x));
+          obj.y=Math.max(100,Math.min(WORLD_H-100,obj.y));
+          obj.flip=obj.vx<0;
+        }
+
+        // Human NPC - walks slowly, drops confession breadcrumbs
         if(obj.type==="human"){
           obj.wanderTimer--;
-          if(obj.wanderTimer<=0){obj.wanderAngle+=(Math.random()-0.5)*1;obj.wanderTimer=200+Math.random()*300;}
+          if(obj.wanderTimer<=0){
+            obj.wanderAngle+=(Math.random()-0.5)*1;
+            obj.wanderTimer=200+Math.random()*300;
+          }
           obj.vx+=Math.cos(obj.wanderAngle)*0.02;
           obj.vx*=0.95;obj.x+=obj.vx;
           obj.x=Math.max(200,Math.min(WORLD_W-200,obj.x));
+          obj.dropTimer=(obj.dropTimer||0)-1;
+          if(obj.dropTimer<=0){
+            obj.dropTimer=600;
+            toAdd.push({
+              type:"breadcrumb",id:`bc_${Date.now()}`,
+              x:obj.x,y:obj.y,
+              text:NPC_CONFESSIONS[Math.floor(Math.random()*NPC_CONFESSIONS.length)],
+              life:900,frame:0,
+            });
+          }
         }
+
+        // Diablo - roams, spooks cats, takes laser hits
         if(obj.type==="diablo"){
           obj.wanderTimer--;
-          if(obj.wanderTimer<=0){obj.wanderAngle+=(Math.random()-0.5)*0.5;obj.wanderTimer=200+Math.random()*400;}
+          if(obj.wanderTimer<=0){
+            obj.wanderAngle+=(Math.random()-0.5)*0.5;
+            obj.wanderTimer=200+Math.random()*400;
+          }
           obj.vx+=Math.cos(obj.wanderAngle)*0.015;
           obj.vy+=Math.sin(obj.wanderAngle)*0.015;
           obj.vx*=0.98;obj.vy*=0.98;
           obj.x+=obj.vx;obj.y+=obj.vy;
           obj.x=Math.max(500,Math.min(WORLD_W-500,obj.x));
           obj.y=Math.max(500,Math.min(WORLD_H-500,obj.y));
+          // spook cat
           if(myCat){
-            const ddx=myCat.x-obj.x,ddy=myCat.y-obj.y;
-            const ddist=Math.hypot(ddx,ddy);
-            if(ddist<200){myCat.vx+=(ddx/ddist)*0.5;myCat.vy+=(ddy/ddist)*0.5;myCat.state="run";}
+            const dd=Math.hypot(myCat.x-obj.x,myCat.y-obj.y);
+            if(dd<200){
+              myCat.vx+=(myCat.x-obj.x)/dd*0.5;
+              myCat.vy+=(myCat.y-obj.y)/dd*0.5;
+              myCat.state="run";
+            }
+          }
+          // laser damage
+          if(obj.hitCooldown>0) obj.hitCooldown--;
+          if(laser.active&&obj.hitCooldown===0&&Math.hypot(laserWx-obj.x,laserWy-obj.y)<50){
+            obj.hp=(obj.hp||10)-1;
+            obj.hitCooldown=30;
+            if(obj.hp<=0){
+              // defeated - spawn fossil reward nearby
+              toAdd.push({
+                type:"fossil",id:`fossil_reward_${Date.now()}`,
+                x:obj.x+100,y:obj.y+100,
+                confession:"u defeated diablo",
+                revealed:true,sitTimer:999,frame:0,
+              });
+              toRemove.add(obj.id);
+            }
           }
         }
-        if(obj.type==="fossil"&&myCat){
-          const fdx=myCat.x-obj.x,fdy=myCat.y-obj.y;
-          if(Math.hypot(fdx,fdy)<60)obj.revealed=true;
+
+        // Breadcrumb - fades out over time
+        if(obj.type==="breadcrumb"){
+          obj.life=(obj.life||0)-1;
+          if(obj.life<=0) toRemove.add(obj.id);
         }
       });
+
+      // apply removals and additions
+      if(toRemove.size>0) s.worldObjs=s.worldObjs.filter(o=>!toRemove.has(o.id));
+      if(toAdd.length>0) s.worldObjs.push(...toAdd);
+
+      // apply cat speed boost
+      if(myCat&&myCat._boostTimer>0){
+        myCat._boostTimer--;
+        myCat.vx*=1.02;myCat.vy*=1.02;
+      }
       if(myCat&&channelRef.current){
         const now=Date.now();
         if(now-moveThrottle.current>100){
@@ -707,12 +861,25 @@ export default function App(){
       s.worldObjs.forEach(obj=>{
         const{sx,sy}=w2s(obj.x,obj.y);
         if(sx<-100||sx>W+100||sy<-100||sy>H+200)return;
-        if(obj.type==="ufo")drawUFO(ctx,sx,sy,obj.frame,obj.confession);
-        if(obj.type==="fossil")drawFossil(ctx,sx,sy,obj.frame,obj.revealed);
+        if(obj.type==="ufo")drawUFO(ctx,sx,sy,obj.frame,null);
+        if(obj.type==="fossil")drawFossil(ctx,sx,sy,obj.frame,obj.revealed,obj.sitTimer,obj.confession);
         if(obj.type==="wildcat")drawWildCat(ctx,sx,sy,obj.frame,obj.pal,obj.flip);
         if(obj.type==="mouse")drawMouse(ctx,sx,sy,obj.frame,obj.flip);
         if(obj.type==="human")drawHuman(ctx,sx,sy,obj.frame);
-        if(obj.type==="diablo")drawDiablo(ctx,sx,sy,obj.frame);
+        if(obj.type==="diablo")drawDiablo(ctx,sx,sy,obj.frame,obj.hp);
+        if(obj.type==="breadcrumb"){
+          const alpha=Math.min(1,(obj.life/60))*0.9;
+          ctx.save();ctx.globalAlpha=alpha;
+          ctx.font=`7px ${ff}`;
+          const tw=ctx.measureText(obj.text).width;
+          ctx.fillStyle="rgba(10,20,10,0.85)";
+          ctx.strokeStyle="#44ff44";ctx.lineWidth=1;
+          ctx.beginPath();ctx.roundRect(sx-tw/2-8,sy-16,tw+16,22,3);
+          ctx.fill();ctx.stroke();
+          ctx.fillStyle="#aaffaa";
+          ctx.fillText(obj.text,sx-tw/2,sy-1);
+          ctx.restore();
+        }
       });
       s.cats.forEach(c=>{
         const{sx,sy}=w2s(c.x,c.y);
@@ -856,7 +1023,7 @@ export default function App(){
   const panelAccent=panel?.isSys?(panel.sysType==="privacy"?"#7777ff":"#44cc44"):(panel?.isOwn?"#ff3232":"rgba(120,120,255,0.7)");
   return(
     <div style={{position:"fixed",inset:0,background:"#080810",fontFamily:ff,overflow:"hidden"}}>
-      <style>{\`
+      <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
         html,body,#root{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#080810;}
         *{box-sizing:border-box;}
@@ -864,7 +1031,7 @@ export default function App(){
         .pal-swatch:hover{transform:scale(1.12);}
         .hbtn{transition:background .15s,box-shadow .15s;cursor:pointer;font-family:'Press Start 2P',monospace;}
         .hbtn:hover{background:rgba(255,50,50,0.2)!important;box-shadow:0 0 20px rgba(255,50,50,0.55)!important;}
-      \`}</style>
+      `}</style>
       <canvas ref={canvasRef}
         style={{position:"absolute",inset:0,width:"100%",height:"100%",display:"block",touchAction:"none",
           cursor:phase==="play"?(laserOn?"none":"grab"):"default",
