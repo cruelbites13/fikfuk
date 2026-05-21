@@ -473,9 +473,11 @@ export default function App(){
 
   // ── Build system cats ──────────────────────────────────────────────────────
   function buildSysCats(){
-    const pc=makeCat(1000,1000,SYS_PAL_PRIVACY,"policy",false,true,"privacy");
+    // spawn near center so new users find them easily
+    const cx=WORLD_W/2, cy=WORLD_H/2;
+    const pc=makeCat(cx-300,cy+200,SYS_PAL_PRIVACY,"policy",false,true,"privacy");
     pc.confessions=[...PRIVACY_LINES];
-    const ac=makeCat(WORLD_W-1000,1000,SYS_PAL_ABOUT,"about",false,true,"about");
+    const ac=makeCat(cx+300,cy+200,SYS_PAL_ABOUT,"about",false,true,"about");
     ac.confessions=[...ABOUT_LINES];
     return[pc,ac];
   }
@@ -893,26 +895,76 @@ export default function App(){
         drawBubble(ctx,{...c,x:sx,y:sy},P);
       });
       if(laser.active&&!s.camDrag)drawLaser(ctx,laser.sx,laser.sy,s.trail,s.frame);
-      const MM_W=120,MM_H=80,MM_X=W-MM_W-12,MM_Y=H-MM_H-70;
+      const MM_W=130,MM_H=90,MM_X=W-MM_W-12,MM_Y=H-MM_H-70;
       ctx.save();
-      ctx.fillStyle="rgba(0,0,0,0.6)";ctx.strokeStyle="rgba(255,50,50,0.3)";ctx.lineWidth=1;
+      // background
+      ctx.fillStyle="rgba(0,0,0,0.7)";ctx.strokeStyle="rgba(255,50,50,0.3)";ctx.lineWidth=1;
       ctx.fillRect(MM_X,MM_Y,MM_W,MM_H);ctx.strokeRect(MM_X,MM_Y,MM_W,MM_H);
+      // viewport box
       const vpx=MM_X+(cam.x/WORLD_W)*MM_W;
       const vpy=MM_Y+(cam.y/WORLD_H)*MM_H;
       const vpw=(W/WORLD_W)*MM_W;
       const vph=(H/WORLD_H)*MM_H;
       ctx.strokeStyle="rgba(255,255,255,0.2)";ctx.strokeRect(vpx,vpy,vpw,vph);
+      // sys cats (policy=purple, about=green)
+      s.cats.filter(c=>c.isSys).forEach(c=>{
+        const mx=MM_X+(c.x/WORLD_W)*MM_W;
+        const my=MM_Y+(c.y/WORLD_H)*MM_H;
+        const col=c.sysType==="privacy"?"#7777ff":"#44cc44";
+        ctx.fillStyle=col;
+        ctx.fillRect(mx-2,my-2,4,4);
+        ctx.font="5px monospace";
+        ctx.fillStyle=col;
+        ctx.fillText(c.sysType==="privacy"?"P":"A",mx+3,my+2);
+      });
+      // player cats with their actual color
       s.cats.filter(c=>!c.isSys).forEach(c=>{
         const mx=MM_X+(c.x/WORLD_W)*MM_W;
         const my=MM_Y+(c.y/WORLD_H)*MM_H;
-        ctx.fillStyle=c.isOwn?"#ff4444":"rgba(150,150,255,0.8)";
-        ctx.beginPath();ctx.arc(mx,my,c.isOwn?3:2,0,Math.PI*2);ctx.fill();
+        if(c.isOwn){
+          // own cat - red with pulse
+          ctx.fillStyle="#ff4444";
+          ctx.beginPath();ctx.arc(mx,my,3,0,Math.PI*2);ctx.fill();
+          ctx.strokeStyle="rgba(255,80,80,0.4)";ctx.lineWidth=1;
+          ctx.beginPath();ctx.arc(mx,my,5,0,Math.PI*2);ctx.stroke();
+        } else {
+          // other players - use their body color
+          ctx.fillStyle=c.pal?.body??"rgba(150,150,255,0.8)";
+          ctx.strokeStyle="rgba(255,255,255,0.4)";ctx.lineWidth=0.5;
+          ctx.beginPath();ctx.arc(mx,my,2.5,0,Math.PI*2);ctx.fill();ctx.stroke();
+        }
       });
+      // world objects
       s.worldObjs.forEach(obj=>{
         const mx=MM_X+(obj.x/WORLD_W)*MM_W;
         const my=MM_Y+(obj.y/WORLD_H)*MM_H;
-        if(obj.type==="ufo"){ctx.fillStyle="rgba(100,200,255,0.5)";ctx.fillRect(mx-1,my-1,2,2);}
-        if(obj.type==="diablo"){ctx.fillStyle="rgba(255,0,0,0.8)";ctx.beginPath();ctx.arc(mx,my,3,0,Math.PI*2);ctx.fill();}
+        if(obj.type==="ufo"){ctx.fillStyle="rgba(100,200,255,0.6)";ctx.fillRect(mx-1,my-1,2,2);}
+        if(obj.type==="diablo"){
+          ctx.fillStyle="rgba(255,0,0,0.9)";
+          ctx.beginPath();ctx.arc(mx,my,3,0,Math.PI*2);ctx.fill();
+        }
+        if(obj.type==="fossil"&&obj.revealed){
+          ctx.fillStyle="rgba(255,220,100,0.6)";ctx.fillRect(mx-1,my-1,2,2);
+        }
+      });
+      // legend
+      const LX=MM_X+4, LY=MM_Y+MM_H+8;
+      ctx.font="5px monospace";
+      const legend=[
+        {col:"#ff4444",label:"you"},
+        {col:"rgba(150,150,255,0.9)",label:"players"},
+        {col:"#7777ff",label:"policy"},
+        {col:"#44cc44",label:"about"},
+        {col:"rgba(100,200,255,0.7)",label:"ufo"},
+        {col:"rgba(255,0,0,0.9)",label:"diablo"},
+      ];
+      legend.forEach((l,i)=>{
+        const lx=MM_X+(i%3)*(MM_W/3);
+        const ly=MM_Y+MM_H+(Math.floor(i/3)*10)+6;
+        ctx.fillStyle=l.col;
+        ctx.fillRect(lx+2,ly-4,5,5);
+        ctx.fillStyle="rgba(255,255,255,0.5)";
+        ctx.fillText(l.label,lx+9,ly);
       });
       ctx.restore();
       animRef.current=requestAnimationFrame(tick);
