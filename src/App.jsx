@@ -163,7 +163,7 @@ function drawUFO(ctx,x,y,frame,confession,hitCount){
     const tw=ctx.measureText(confession).width;
     const bx=x-tw/2-8,by=y+55,bw=tw+16,bh=22;
     ctx.fillStyle="rgba(10,20,10,0.85)";ctx.strokeStyle="#44ff44";ctx.lineWidth=1;
-    ctx.beginPath();ctx.roundRect(bx,by,bw,bh,3);ctx.fill();ctx.stroke();
+    rrect(ctx,bx,by,bw,bh,3);ctx.fill();ctx.stroke();
     ctx.fillStyle="#88ff88";ctx.fillText(confession,bx+8,by+15);
     ctx.restore();
   }
@@ -872,9 +872,10 @@ export default function App(){
           ctx.save();ctx.globalAlpha=alpha;
           ctx.font=`7px ${ff}`;
           const tw=ctx.measureText(obj.text).width;
+          const bx=sx-tw/2-8,by=sy-16,bw=tw+16,bh=22;
           ctx.fillStyle="rgba(10,20,10,0.85)";
           ctx.strokeStyle="#44ff44";ctx.lineWidth=1;
-          ctx.beginPath();ctx.roundRect(sx-tw/2-8,sy-16,tw+16,22,3);
+          rrect(ctx,bx,by,bw,bh,3);
           ctx.fill();ctx.stroke();
           ctx.fillStyle="#aaffaa";
           ctx.fillText(obj.text,sx-tw/2,sy-1);
