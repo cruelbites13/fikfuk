@@ -1020,10 +1020,12 @@ export default function App(){
       if(cat){cat.x=wpos.wx-s.drag.offX;cat.y=wpos.wy-s.drag.offY;}
       return;
     }
-    if(s.laserOn&&s.laser.active){
-      s.laser={sx,sy,active:true};
-      s.trail.push({x:sx,y:sy});
-      if(s.trail.length>24)s.trail.shift();
+    if(s.laserOn){
+      if(s.laser.active){
+        s.laser={sx,sy,active:true};
+        s.trail.push({x:sx,y:sy});
+        if(s.trail.length>24)s.trail.shift();
+      }
       return;
     }
     if(s.camDrag){
