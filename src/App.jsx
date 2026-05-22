@@ -1008,7 +1008,7 @@ export default function App(){
     }
     lastTap.current={id:null,time:0};
     if(s.laserOn){s.laser={sx,sy,active:true};}
-    else{s.camDrag={startSx:sx,startSy:sy,startCamX:s.cam.x,startCamY:s.cam.y};}
+    else{s.camDrag={lastSx:sx,lastSy:sy};}
   },[]);
   const onPointerMove=useCallback((e)=>{
     if(phaseRef.current!=="play")return;
@@ -1027,10 +1027,12 @@ export default function App(){
       return;
     }
     if(s.camDrag){
-      const dx=sx-s.camDrag.startSx;
-      const dy=sy-s.camDrag.startSy;
-      s.cam.x=Math.max(0,Math.min(WORLD_W-canvasRef.current.width,s.camDrag.startCamX-dx));
-      s.cam.y=Math.max(0,Math.min(WORLD_H-canvasRef.current.height,s.camDrag.startCamY-dy));
+      const dx=sx-s.camDrag.lastSx;
+      const dy=sy-s.camDrag.lastSy;
+      s.cam.x=Math.max(0,Math.min(WORLD_W-canvasRef.current.width,s.cam.x-dx));
+      s.cam.y=Math.max(0,Math.min(WORLD_H-canvasRef.current.height,s.cam.y-dy));
+      s.camDrag.lastSx=sx;
+      s.camDrag.lastSy=sy;
     }
   },[]);
   const onPointerUp=useCallback(()=>{
