@@ -569,7 +569,29 @@ export default function App(){
     });
     channel.presence.enter(myPresenceData());
     myCat._updatePresence=()=>channel.presence.update(myPresenceData());
+
+    // reconnection handler - re-enter presence if connection drops and recovers
+    ably.connection.on("connected",()=>{
+      // re-enter presence after reconnect
+      channel.presence.enter(myPresenceData());
+    });
+
+    ably.connection.on("disconnected",()=>{
+      console.log("Ably disconnected - will auto reconnect");
+    });
+
+    ably.connection.on("suspended",()=>{
+      console.log("Ably suspended - trying to reconnect");
+    });
+
     window.addEventListener("beforeunload",()=>channel.presence.leave());
+
+    // re-enter presence when tab becomes visible again
+    document.addEventListener("visibilitychange",()=>{
+      if(!document.hidden&&ably.connection.state==="connected"){
+        channel.presence.enter(myPresenceData());
+      }
+    });
   }
 
   useEffect(()=>{
