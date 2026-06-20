@@ -44,6 +44,8 @@ const SYS_PAL_PRIVACY={ body:"#1a1a2e",shadow:"#0d0d1a",stripe:"#2d2d5e",inner:"
 const SYS_PAL_ABOUT  ={ body:"#1a2e1a",shadow:"#0d1a0d",stripe:"#2d5e2d",inner:"#c0ffc0",eye:"#44cc44",pupil:"#226622",nose:"#aaffaa",_name:"about"  };
 const PRIVACY_LINES=["anonymous","no accounts","no emails","confessions live 3hrs","then wiped forever","no tracking · ever"];
 const ABOUT_LINES  =["fikfuk.wtf","a canvas of strangers","& their pixel cats","built by cruelbites","donate via solana","double-tap to donate"];
+const SYS_PAL_PATATES={ body:"#e07b39",shadow:"#a85a28",stripe:"#c4672f",inner:"#ffd9a0",eye:"#ffcc66",pupil:"#7a4a10",nose:"#ffb6c1",_name:"patates" };
+const PATATES_LINES=["thank u for taking care of me","i loved being clingy with u","my naughty days were the best days","i am okay now, dont worry","i still hear u calling my name","u gave me a good life"];
 
 // ─── Cat renderer ─────────────────────────────────────────────────────────────
 function drawCat(ctx,x,y,p,frame,pal,flip,state,grabbed,isOwn,isSys,idle){
@@ -296,18 +298,21 @@ function drawBubble(ctx,cat,p){
   if(cat.revealAlpha<=0||!cat.confessions.length)return;
   const text=cat.confessions[cat.confessions.length-1];
   const cx=cat.x+5.5*p,cy=cat.y-4;
+  const isPatates=cat.sysType==="patates";
+  const accent=isPatates?"#ffaa44":"#ff4444";
+  const textCol=isPatates?"#ffd9a0":"#ff8888";
   ctx.save();ctx.globalAlpha=cat.revealAlpha*(cat.idle?0.35:1);
   ctx.font=`${Math.max(7,p*1.8)}px ${ff}`;
   const tw=ctx.measureText(text).width,pad=10,bh=26,bw=tw+pad*2;
   const bx=cx-bw/2,by=cy-bh-12;
   ctx.fillStyle="rgba(0,0,0,0.45)";rrect(ctx,bx+2,by+2,bw,bh,4);ctx.fill();
-  ctx.fillStyle="#0d0d1a";ctx.strokeStyle="#ff4444";ctx.lineWidth=1.5;
+  ctx.fillStyle="#1a140d";ctx.strokeStyle=accent;ctx.lineWidth=1.5;
   rrect(ctx,bx,by,bw,bh,4);ctx.fill();ctx.stroke();
   ctx.beginPath();ctx.moveTo(cx-5,by+bh);ctx.lineTo(cx,by+bh+10);ctx.lineTo(cx+5,by+bh);
-  ctx.fillStyle="#0d0d1a";ctx.fill();
+  ctx.fillStyle="#1a140d";ctx.fill();
   ctx.beginPath();ctx.moveTo(cx-5,by+bh);ctx.lineTo(cx,by+bh+10);ctx.lineTo(cx+5,by+bh);
-  ctx.strokeStyle="#ff4444";ctx.lineWidth=1.5;ctx.stroke();
-  ctx.fillStyle="#ff8888";ctx.fillText(text,bx+pad,by+bh-8);
+  ctx.strokeStyle=accent;ctx.lineWidth=1.5;ctx.stroke();
+  ctx.fillStyle=textCol;ctx.fillText(text,bx+pad,by+bh-8);
   ctx.restore();
 }
 
@@ -479,7 +484,11 @@ export default function App(){
     pc.confessions=[...PRIVACY_LINES];
     const ac=makeCat(cx+300,cy+200,SYS_PAL_ABOUT,"about",false,true,"about");
     ac.confessions=[...ABOUT_LINES];
-    return[pc,ac];
+    // patates - tribute cat, always present near spawn
+    const pat=makeCat(cx,cy-250,SYS_PAL_PATATES,"patates",false,true,"patates");
+    pat.confessions=[...PATATES_LINES];
+    pat.wanderTimer=0;
+    return[pc,ac,pat];
   }
 
   const requestSpawn=useCallback((name,palId,restored=null)=>{
@@ -659,11 +668,49 @@ export default function App(){
             cat.state=Math.random()>0.45?"sit":"run";
           }
           if(cat.state==="run"){cat.vx+=Math.cos(cat.wanderAngle)*0.03;cat.vy+=Math.sin(cat.wanderAngle)*0.03;cat.flip=cat.vx<0;}
+        } else if(cat.sysType==="patates"){
+          // gentle, careful wandering - short bursts then long pauses
+          cat.wanderTimer--;
+          if(cat.wanderTimer<=0){
+            if(cat.state==="sit"){
+              cat.wanderAngle=Math.random()*Math.PI*2;
+              cat.wanderTimer=20+Math.random()*30;
+              cat.state="run";
+            } else {
+              cat.wanderTimer=180+Math.random()*240;
+              cat.state="sit";
+            }
+          }
+          if(cat.state==="run"){
+            cat.vx+=Math.cos(cat.wanderAngle)*0.02;
+            cat.vy+=Math.sin(cat.wanderAngle)*0.02;
+            cat.flip=cat.vx<0;
+          }
+          // reveal confession when any player cat is near
+          if(myCat){
+            const pdx=myCat.x-cat.x,pdy=myCat.y-cat.y;
+            const pdist=Math.hypot(pdx,pdy);
+            if(pdist<140){
+              cat.revealAlpha=Math.min(1,cat.revealAlpha+0.04);
+              cat.revealTimer=100;
+              // cycle through his messages slowly
+              cat._cycleTimer=(cat._cycleTimer||0)+1;
+              if(cat._cycleTimer>240){
+                cat._cycleTimer=0;
+                const idx=(cat._msgIdx||0);
+                const next=(idx+1)%cat.confessions.length;
+                cat._msgIdx=next;
+                const msg=cat.confessions[next];
+                cat.confessions=cat.confessions.filter(m=>m!==msg);
+                cat.confessions.push(msg);
+              }
+            }
+          }
         }
         cat.vx*=0.86;cat.vy*=0.86;
         const spd2=Math.hypot(cat.vx,cat.vy);
         if(spd2>3.5){cat.vx=cat.vx/spd2*3.5;cat.vy=cat.vy/spd2*3.5;}
-        if(!cat.isSys){cat.x+=cat.vx;cat.y+=cat.vy;}
+        if(!cat.isSys||cat.sysType==="patates"){cat.x+=cat.vx;cat.y+=cat.vy;}
         cat.x=Math.max(10,Math.min(WORLD_W-12*P,cat.x));
         cat.y=Math.max(10,Math.min(WORLD_H-14*P,cat.y));
         if(cat.revealTimer>0)cat.revealTimer--;
