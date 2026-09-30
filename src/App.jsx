@@ -8,6 +8,38 @@ const WORLD_W   = 10000;
 const WORLD_H   = 10000;
 const RESET_MS  = 3 * 60 * 60 * 1000;
 const EPOCH_ANCHOR = 1700000000000;
+const DAY_CYCLE_MS = 30 * 60 * 1000; // 30 min full cycle
+function getDayProgress(){
+  // 0.0 = midnight, 0.5 = noon, 1.0 = midnight again
+  return ((Date.now()-EPOCH_ANCHOR) % DAY_CYCLE_MS) / DAY_CYCLE_MS;
+}
+function isNight(){
+  const p=getDayProgress();
+  return p<0.25||p>0.75; // night = first and last quarter
+}
+function getSkyColor(){
+  const p=getDayProgress();
+  // 0=midnight #080810, 0.25=dawn #1a0f2e, 0.5=noon #0d1a2e, 0.75=dusk #2e0f1a
+  if(p<0.25){
+    const t=p/0.25;
+    return blendColor([8,8,16],[26,15,46],t);
+  } else if(p<0.5){
+    const t=(p-0.25)/0.25;
+    return blendColor([26,15,46],[13,26,46],t);
+  } else if(p<0.75){
+    const t=(p-0.5)/0.25;
+    return blendColor([13,26,46],[46,15,26],t);
+  } else {
+    const t=(p-0.75)/0.25;
+    return blendColor([46,15,26],[8,8,16],t);
+  }
+}
+function blendColor(a,b,t){
+  const r=Math.round(a[0]+(b[0]-a[0])*t);
+  const g=Math.round(a[1]+(b[1]-a[1])*t);
+  const bl=Math.round(a[2]+(b[2]-a[2])*t);
+  return `rgb(${r},${g},${bl})`;
+}
 const P = 3; // pixel scale
 const ff = "'Press Start 2P',monospace";
 
@@ -552,8 +584,14 @@ export default function App(){
     channel.presence.subscribe("present",(m)=>addRemoteCat(m.data,m.clientId));
     channel.presence.subscribe("leave",(m)=>{
       const s=gs.current;
-      s.cats=s.cats.filter(c=>c.id!==m.clientId);
-      setOnlineCount(s.cats.filter(c=>!c.isSys).length);
+      const leavingCat=s.cats.find(c=>c.id===m.clientId);
+      if(leavingCat){
+        // turn into ghost instead of instant removal
+        leavingCat.isGhost=true;
+        leavingCat.ghostTimer=120; // 2 seconds at 60fps
+        leavingCat.idle=true;
+      }
+      setOnlineCount(s.cats.filter(c=>!c.isSys&&!c.isGhost).length);
     });
     channel.presence.subscribe("update",(m)=>{
       if(m.clientId===clientId.current)return;
@@ -707,6 +745,23 @@ export default function App(){
             }
           }
         }
+        // ── mood system ──
+        if(cat.isOwn&&!cat.isSys){
+          if(!cat.mood) cat.mood="neutral";
+          if(!cat.moodTimer) cat.moodTimer=0;
+          cat.moodTimer--;
+          // scared - near diablo
+          const nearDiablo=s.worldObjs.find(o=>o.type==="diablo"&&Math.hypot(cat.x-o.x,cat.y-o.y)<200);
+          if(nearDiablo){ cat.mood="scared"; cat.moodTimer=180; }
+          // happy - caught a mouse recently
+          if(cat._boostTimer>0){ cat.mood="happy"; }
+          // friendly - near another player cat
+          const nearPlayer=s.cats.find(c=>!c.isOwn&&!c.isSys&&!c.isGhost&&Math.hypot(cat.x-c.x,cat.y-c.y)<100);
+          if(nearPlayer&&cat.mood==="neutral"){ cat.mood="friendly"; cat.moodTimer=300; }
+          // reset to neutral
+          if(cat.moodTimer<=0) cat.mood="neutral";
+        }
+
         cat.vx*=0.86;cat.vy*=0.86;
         const spd2=Math.hypot(cat.vx,cat.vy);
         if(spd2>3.5){cat.vx=cat.vx/spd2*3.5;cat.vy=cat.vy/spd2*3.5;}
@@ -856,8 +911,9 @@ export default function App(){
             obj.wanderAngle+=(Math.random()-0.5)*0.5;
             obj.wanderTimer=200+Math.random()*400;
           }
-          obj.vx+=Math.cos(obj.wanderAngle)*0.015;
-          obj.vy+=Math.sin(obj.wanderAngle)*0.015;
+          const diabloSpd=isNight()?0.028:0.015;
+          obj.vx+=Math.cos(obj.wanderAngle)*diabloSpd;
+          obj.vy+=Math.sin(obj.wanderAngle)*diabloSpd;
           obj.vx*=0.98;obj.vy*=0.98;
           obj.x+=obj.vx;obj.y+=obj.vy;
           obj.x=Math.max(500,Math.min(WORLD_W-500,obj.x));
@@ -896,6 +952,15 @@ export default function App(){
         }
       });
 
+      // update ghost cats
+      s.cats.forEach(cat=>{
+        if(cat.isGhost){
+          cat.ghostTimer=(cat.ghostTimer||0)-1;
+          cat.ghostAlpha=Math.max(0,(cat.ghostTimer||0)/120);
+        }
+      });
+      s.cats=s.cats.filter(c=>!c.isGhost||c.ghostTimer>0);
+
       // apply removals and additions
       if(toRemove.size>0) s.worldObjs=s.worldObjs.filter(o=>!toRemove.has(o.id));
       if(toAdd.length>0) s.worldObjs.push(...toAdd);
@@ -916,17 +981,23 @@ export default function App(){
         const sess=loadSession();
         if(sess)saveSession({...sess,x:myCat.x,y:myCat.y,confessions:myCat.confessions});
       }
-      ctx.fillStyle="#080810";ctx.fillRect(0,0,W,H);
+      const skyCol=getSkyColor();
+      ctx.fillStyle=skyCol;ctx.fillRect(0,0,W,H);
+      // night overlay - more stars visible at night
+      if(isNight()){
+        ctx.fillStyle="rgba(0,0,10,0.15)";ctx.fillRect(0,0,W,H);
+      }
       ctx.save();
       const bx=-cam.x,by=-cam.y;
       ctx.strokeStyle="rgba(255,50,50,0.15)";ctx.lineWidth=3;
       ctx.strokeRect(bx,by,WORLD_W,WORLD_H);
       ctx.restore();
+      const nightBoost=isNight()?0.4:0;
       s.stars.forEach(st=>{
         const sx=(st.x-cam.x*0.3+W*10)%W;
         const sy=(st.y-cam.y*0.3+H*10)%H;
         ctx.beginPath();ctx.arc(sx,sy,st.r,0,Math.PI*2);
-        ctx.fillStyle=`rgba(200,200,255,${st.a+Math.sin(s.frame*st.speed)*0.12})`;ctx.fill();
+        ctx.fillStyle=`rgba(200,200,255,${Math.min(1,st.a+nightBoost+Math.sin(s.frame*st.speed)*0.12)})`;ctx.fill();
       });
       for(let gy=0;gy<H;gy+=4){ctx.fillStyle="rgba(0,0,0,0.06)";ctx.fillRect(0,gy,W,2);}
       s.worldObjs.forEach(obj=>{
@@ -956,12 +1027,33 @@ export default function App(){
       s.cats.forEach(c=>{
         const{sx,sy}=w2s(c.x,c.y);
         if(sx<-60||sx>W+60||sy<-60||sy>H+60)return;
-        if(!c.grabbed&&!c.isSys){
+        if(!c.grabbed&&!c.isSys&&!c.isGhost){
           ctx.save();ctx.globalAlpha=c.idle?0.08:0.15;ctx.fillStyle="#000";
           ctx.beginPath();ctx.ellipse(sx+5.5*P,sy+13*P,14,4,0,0,Math.PI*2);ctx.fill();ctx.restore();
         }
-        drawCat(ctx,sx,sy,P,c.frame,c.pal,c.flip,c.state,c.grabbed,c.isOwn,c.isSys,c.idle);
+        if(c.isGhost){
+          ctx.save();
+          ctx.globalAlpha=(c.ghostAlpha||0)*0.5;
+          // blue-white ghost tint
+          ctx.filter="grayscale(1) brightness(2) sepia(0.3) hue-rotate(200deg)";
+          drawCat(ctx,sx,sy,P,c.frame,c.pal,c.flip,"sit",false,false,false,true);
+          ctx.filter="none";
+          ctx.restore();
+        } else {
+          drawCat(ctx,sx,sy,P,c.frame,c.pal,c.flip,c.state,c.grabbed,c.isOwn,c.isSys,c.idle);
+        }
         drawBubble(ctx,{...c,x:sx,y:sy},P);
+        // mood indicator above own cat
+        if(c.isOwn&&!c.isSys&&c.mood&&c.mood!=="neutral"){
+          const moodEmoji={scared:"😱",happy:"😻",friendly:"😸"}[c.mood]||"";
+          if(moodEmoji){
+            ctx.save();
+            ctx.font="14px serif";
+            ctx.globalAlpha=0.85;
+            ctx.fillText(moodEmoji,sx+2*P,sy-12);
+            ctx.restore();
+          }
+        }
       });
       if(laser.active&&!s.camDrag)drawLaser(ctx,laser.sx,laser.sy,s.trail,s.frame);
       const MM_W=130,MM_H=90,MM_X=W-MM_W-12,MM_Y=H-MM_H-70;
@@ -1217,6 +1309,7 @@ export default function App(){
           <div style={{display:"flex",gap:12,alignItems:"center"}}>
             <span style={{fontSize:7,color:"rgba(255,255,255,0.3)"}}>🐾 {onlineCount} online</span>
             <span style={{fontSize:7,color:"rgba(255,255,255,0.22)"}}>resets {fmtCountdown(resetIn)}</span>
+            <span style={{fontSize:7,color:"rgba(255,255,255,0.22)"}}>{Math.floor(getDayProgress()*100)<25||Math.floor(getDayProgress()*100)>75?"🌙":"☀️"}</span>
           </div>
         </div>
         <button className="hbtn" onClick={centerOnCat}
