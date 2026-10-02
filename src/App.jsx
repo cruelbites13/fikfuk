@@ -78,6 +78,12 @@ const PRIVACY_LINES=["anonymous","no accounts","no emails","confessions live 3hr
 const ABOUT_LINES  =["fikfuk.wtf","a canvas of strangers","& their pixel cats","built by cruelbites","donate via solana","double-tap to donate"];
 const SYS_PAL_PATATES={ body:"#e07b39",shadow:"#a85a28",stripe:"#c4672f",inner:"#ffd9a0",eye:"#ffcc66",pupil:"#7a4a10",nose:"#ffb6c1",_name:"patates" };
 const PATATES_LINES=["thank u for taking care of me","i loved being clingy with u","my naughty days were the best days","i am okay now, dont worry","i still hear u calling my name","u gave me a good life"];
+const SYS_PAL_ORACLE={ body:"#1a0a2e",shadow:"#0d0514",stripe:"#3d1a5e",inner:"#e0c0ff",eye:"#cc44ff",pupil:"#660099",nose:"#ff88ff",_name:"oracle" };
+const ORACLE_RESPONSES=[
+  "yes, but not yet","no, and that is okay","the stars say maybe","ask again at midnight",
+  "your cat knows the answer","it has already happened","let it go","not in this session",
+  "the wall holds your answer","yes, absolutely","never","only if u confess first",
+];
 
 // ─── Cat renderer ─────────────────────────────────────────────────────────────
 function drawCat(ctx,x,y,p,frame,pal,flip,state,grabbed,isOwn,isSys,idle){
@@ -367,6 +373,24 @@ const NPC_CONFESSIONS=[
 
 // ── Spawn rates (max alive at once) ──────────────────────────────────────────
 const SPAWN_LIMITS = { ufo:2, fossil:3, wildcat:3, mouse:5, human:1, diablo:1 };
+
+// ── Confession Wall ───────────────────────────────────────────────────────────
+const WALL_X = 5000; // center of world
+const WALL_Y = 1800; // north of spawn
+const WALL_W = 600;
+const WALL_H = 300;
+// shared wall confessions (synced via Ably)
+const wallConfessions = []; // {text, x, y, alpha, id}
+function addToWall(text){
+  if(wallConfessions.length>=20) wallConfessions.shift();
+  wallConfessions.push({
+    text: text.slice(0,28),
+    x: 20+Math.random()*(WALL_W-160),
+    y: 30+Math.random()*(WALL_H-50),
+    alpha: 0,
+    id: Date.now()+"_"+Math.random().toString(36).slice(2,6),
+  });
+}
 const SPAWN_INTERVALS = { ufo:30, fossil:45, wildcat:20, mouse:15, human:60, diablo:180 }; // seconds
 
 function spawnObj(type, existingObjs){
@@ -491,6 +515,8 @@ export default function App(){
   const [showInput,   setShowInput]   = useState(false);
   const [inputVal,    setInputVal]    = useState("");
   const [cooldown,    setCooldown]    = useState(0);
+  const [showLetterInput, setShowLetterInput] = useState(false);
+  const [letterVal, setLetterVal] = useState("");
   const [panel,       setPanel]       = useState(null);
   const [resetIn,     setResetIn]     = useState(nextResetMs());
   const [onlineCount, setOnlineCount] = useState(0);
@@ -520,7 +546,16 @@ export default function App(){
     const pat=makeCat(cx,cy-250,SYS_PAL_PATATES,"patates",false,true,"patates");
     pat.confessions=[...PATATES_LINES];
     pat.wanderTimer=0;
-    return[pc,ac,pat];
+    // oracle - rare, random location far from spawn
+    const oraclePal={...SYS_PAL_ORACLE};
+    const ocat=makeCat(
+      1000+Math.random()*(WORLD_W-2000),
+      1000+Math.random()*(WORLD_H-2000),
+      oraclePal,"oracle",false,true,"oracle"
+    );
+    ocat.confessions=["i see all","i know all","ask me anything","double-tap to consult"];
+    ocat._isOracle=true;
+    return[pc,ac,pat,ocat];
   }
 
   const requestSpawn=useCallback((name,palId,restored=null)=>{
@@ -606,6 +641,17 @@ export default function App(){
       const d=msg.data;
       cat.x=d.x;cat.y=d.y;cat.vx=d.vx;cat.vy=d.vy;cat.flip=d.flip;cat.state=d.state;
     });
+    channel.subscribe("wall",(msg)=>{
+      if(msg.clientId===clientId.current)return;
+      addToWall(msg.data.entry.text);
+    });
+
+    channel.subscribe("letter",(msg)=>{
+      if(msg.clientId===clientId.current)return;
+      const l=msg.data.letter;
+      gs.current.worldObjs.push({type:"letter",...l,frame:0,alpha:0});
+    });
+
     channel.subscribe("reset",()=>{
       localStorage.removeItem("fikfuk_s");
       const s=gs.current;
@@ -706,6 +752,19 @@ export default function App(){
             cat.state=Math.random()>0.45?"sit":"run";
           }
           if(cat.state==="run"){cat.vx+=Math.cos(cat.wanderAngle)*0.03;cat.vy+=Math.sin(cat.wanderAngle)*0.03;cat.flip=cat.vx<0;}
+        } else if(cat.sysType==="oracle"){
+          // slow mystical drift
+          cat.wanderTimer--;
+          if(cat.wanderTimer<=0){
+            cat.wanderAngle+=(Math.random()-0.5)*0.8;
+            cat.wanderTimer=300+Math.random()*400;
+            cat.state=Math.random()>0.7?"run":"sit";
+          }
+          if(cat.state==="run"){
+            cat.vx+=Math.cos(cat.wanderAngle)*0.01;
+            cat.vy+=Math.sin(cat.wanderAngle)*0.01;
+            cat.flip=cat.vx<0;
+          }
         } else if(cat.sysType==="patates"){
           // gentle, careful wandering - short bursts then long pauses
           cat.wanderTimer--;
@@ -765,7 +824,7 @@ export default function App(){
         cat.vx*=0.86;cat.vy*=0.86;
         const spd2=Math.hypot(cat.vx,cat.vy);
         if(spd2>3.5){cat.vx=cat.vx/spd2*3.5;cat.vy=cat.vy/spd2*3.5;}
-        if(!cat.isSys||cat.sysType==="patates"){cat.x+=cat.vx;cat.y+=cat.vy;}
+        if(!cat.isSys||cat.sysType==="patates"||cat.sysType==="oracle"){cat.x+=cat.vx;cat.y+=cat.vy;}
         cat.x=Math.max(10,Math.min(WORLD_W-12*P,cat.x));
         cat.y=Math.max(10,Math.min(WORLD_H-14*P,cat.y));
         if(cat.revealTimer>0)cat.revealTimer--;
@@ -1000,6 +1059,41 @@ export default function App(){
         ctx.fillStyle=`rgba(200,200,255,${Math.min(1,st.a+nightBoost+Math.sin(s.frame*st.speed)*0.12)})`;ctx.fill();
       });
       for(let gy=0;gy<H;gy+=4){ctx.fillStyle="rgba(0,0,0,0.06)";ctx.fillRect(0,gy,W,2);}
+      // ── Draw Confession Wall ──
+      const wallSx=WALL_X-cam.x-WALL_W/2;
+      const wallSy=WALL_Y-cam.y-WALL_H/2;
+      if(wallSx>-WALL_W&&wallSx<W&&wallSy>-WALL_H&&wallSy<H){
+        ctx.save();
+        // stone wall base
+        ctx.fillStyle="#1a1510";
+        ctx.fillRect(wallSx,wallSy,WALL_W,WALL_H);
+        // stone texture lines
+        ctx.strokeStyle="#2a2018";ctx.lineWidth=1;
+        for(let wy=0;wy<WALL_H;wy+=30) ctx.strokeRect(wallSx,wallSy+wy,WALL_W,30);
+        for(let wx=0;wx<WALL_W;wx+=60) ctx.strokeRect(wallSx+wx,wallSy,60,WALL_H);
+        // border
+        ctx.strokeStyle="#3a3028";ctx.lineWidth=3;
+        ctx.strokeRect(wallSx,wallSy,WALL_W,WALL_H);
+        // title
+        ctx.font=`7px ${ff}`;ctx.fillStyle="rgba(255,200,100,0.5)";
+        ctx.fillText("// wall of confessions",wallSx+10,wallSy+14);
+        // confessions on wall
+        ctx.font=`6px ${ff}`;
+        wallConfessions.forEach(wc=>{
+          wc.alpha=Math.min(1,wc.alpha+0.01);
+          ctx.globalAlpha=wc.alpha*0.75;
+          ctx.fillStyle=`hsl(${30+Math.random()*20},60%,70%)`;
+          ctx.fillText(wc.text,wallSx+wc.x,wallSy+wc.y);
+        });
+        ctx.restore();
+        // label above wall
+        ctx.save();
+        ctx.font=`8px ${ff}`;ctx.fillStyle="rgba(255,200,100,0.4)";
+        const labelW=ctx.measureText("the wall").width;
+        ctx.fillText("the wall",wallSx+WALL_W/2-labelW/2,wallSy-10);
+        ctx.restore();
+      }
+
       s.worldObjs.forEach(obj=>{
         const{sx,sy}=w2s(obj.x,obj.y);
         if(sx<-100||sx>W+100||sy<-100||sy>H+200)return;
@@ -1022,6 +1116,28 @@ export default function App(){
           ctx.fillStyle="#aaffaa";
           ctx.fillText(obj.text,sx-tw/2,sy-1);
           ctx.restore();
+        }
+        if(obj.type==="letter"){
+          obj.alpha=Math.min(1,(obj.alpha||0)+0.01);
+          obj.life=(obj.life||1800)-1;
+          if(obj.life<=0){toRemove.add(obj.id);}
+          else {
+            const la=obj.alpha*Math.min(1,obj.life/120);
+            ctx.save();ctx.globalAlpha=la;
+            ctx.font="16px serif";ctx.fillText("✉",sx-8,sy+8);
+            const myCat2=gs.current.cats.find(c=>c.id===gs.current.myId);
+            if(myCat2&&Math.hypot(myCat2.x-obj.x,myCat2.y-obj.y)<80){
+              ctx.font=`7px ${ff}`;
+              const tw=ctx.measureText(obj.text).width;
+              ctx.fillStyle="rgba(8,12,30,0.9)";
+              ctx.strokeStyle="rgba(100,150,255,0.7)";ctx.lineWidth=1;
+              rrect(ctx,sx-tw/2-8,sy-30,tw+16,20,3);
+              ctx.fill();ctx.stroke();
+              ctx.fillStyle="rgba(150,180,255,0.95)";
+              ctx.fillText(obj.text,sx-tw/2,sy-16);
+            }
+            ctx.restore();
+          }
         }
       });
       s.cats.forEach(c=>{
@@ -1104,6 +1220,18 @@ export default function App(){
           ctx.fillStyle="rgba(255,0,0,0.9)";
           ctx.beginPath();ctx.arc(mx,my,3,0,Math.PI*2);ctx.fill();
         }
+      // wall on minimap
+      const wmx=MM_X+(WALL_X/WORLD_W)*MM_W;
+      const wmy=MM_Y+(WALL_Y/WORLD_H)*MM_H;
+      ctx.fillStyle="rgba(255,200,100,0.6)";
+      ctx.fillRect(wmx-3,wmy-2,6,3);
+      // oracle on minimap
+      s.cats.filter(c=>c.sysType==="oracle").forEach(c=>{
+        const omx=MM_X+(c.x/WORLD_W)*MM_W;
+        const omy=MM_Y+(c.y/WORLD_H)*MM_H;
+        ctx.fillStyle="rgba(200,68,255,0.8)";
+        ctx.beginPath();ctx.arc(omx,omy,3,0,Math.PI*2);ctx.fill();
+      });
         if(obj.type==="fossil"&&obj.revealed){
           ctx.fillStyle="rgba(255,220,100,0.6)";ctx.fillRect(mx-1,my-1,2,2);
         }
@@ -1156,7 +1284,12 @@ export default function App(){
     const now=Date.now();
     if(cat){
       if(lastTap.current.id===cat.id&&now-lastTap.current.time<400){
-        setPanel({catId:cat.id,name:cat.name,confessions:[...cat.confessions],isOwn:cat.isOwn,isSys:cat.isSys,sysType:cat.sysType,eye:cat.pal.eye});
+        if(cat.sysType==="oracle"){
+          const response=ORACLE_RESPONSES[Math.floor(Math.random()*ORACLE_RESPONSES.length)];
+          setPanel({catId:cat.id,name:"oracle",confessions:[response],isOwn:false,isSys:true,sysType:"oracle",eye:cat.pal.eye,isOracleResponse:true});
+        } else {
+          setPanel({catId:cat.id,name:cat.name,confessions:[...cat.confessions],isOwn:cat.isOwn,isSys:cat.isSys,sysType:cat.sysType,eye:cat.pal.eye});
+        }
         lastTap.current={id:null,time:0};return;
       }
       lastTap.current={id:cat.id,time:now};
@@ -1235,10 +1368,15 @@ export default function App(){
     const sess=loadSession();
     if(sess)saveSession({...sess,confessions:myCat.confessions});
     if(myCat._updatePresence)myCat._updatePresence();
+    // add to confession wall
+    const wallEntry={text:inputVal.trim().slice(0,28),x:20+Math.random()*440,y:30+Math.random()*250,alpha:0,id:Date.now()+"_"+Math.random().toString(36).slice(2,6)};
+    addToWall(wallEntry.text);
+    // broadcast to all players
+    channelRef.current?.publish("wall",{entry:wallEntry});
     setInputVal("");setShowInput(false);
     startCooldown();
   };
-  const panelAccent=panel?.isSys?(panel.sysType==="privacy"?"#7777ff":"#44cc44"):(panel?.isOwn?"#ff3232":"rgba(120,120,255,0.7)");
+  const panelAccent=panel?.isSys?(panel.sysType==="privacy"?"#7777ff":panel.sysType==="about"?"#44cc44":panel.sysType==="patates"?"#ffaa44":panel.sysType==="oracle"?"#cc44ff":"#ffffff"):(panel?.isOwn?"#ff3232":"rgba(120,120,255,0.7)");
   return(
     <div style={{position:"fixed",inset:0,background:"#080810",fontFamily:ff,overflow:"hidden"}}>
       <style>{`
@@ -1327,8 +1465,51 @@ export default function App(){
               {cooldown>0?`${cooldown}s`:"+ confess"}
             </button>
           )}
+          <button className="hbtn" onClick={()=>setShowLetterInput(true)}
+            style={{fontSize:8,background:"transparent",border:"2px solid rgba(100,150,255,0.45)",color:"rgba(150,180,255,0.7)",padding:"10px 13px"}}>
+            ✉ letter
+          </button>
         </div>
-        {showInput&&(
+        {showLetterInput&&(
+          <div style={{position:"fixed",bottom:0,left:0,right:0,background:"rgba(8,8,16,0.97)",border:"2px solid rgba(100,150,255,0.6)",borderBottom:"none",boxShadow:"0 0 30px rgba(100,150,255,0.2)",padding:"16px",zIndex:30,display:"flex",flexDirection:"column",gap:10}}>
+            <span style={{fontSize:8,color:"rgba(150,180,255,0.9)"}}>// drop a letter here</span>
+            <input autoFocus maxLength={40} value={letterVal}
+              onChange={e=>setLetterVal(e.target.value)}
+              onKeyDown={e=>{
+                if(e.key==="Enter"&&letterVal.trim()){
+                  const s=gs.current;
+                  const myCat=s.cats.find(c=>c.id===s.myId);
+                  if(myCat){
+                    const letter={id:Date.now()+"_l",x:myCat.x,y:myCat.y-50,text:letterVal.trim().slice(0,40),life:1800,alpha:0};
+                    s.worldObjs.push({type:"letter",...letter,frame:0});
+                    channelRef.current?.publish("letter",{letter});
+                  }
+                  setLetterVal("");setShowLetterInput(false);
+                }
+              }}
+              placeholder="leave a message for strangers... (40 chars)"
+              style={{background:"transparent",border:"none",borderBottom:"1px solid rgba(100,150,255,0.35)",color:"#fff",fontFamily:ff,fontSize:9,padding:"6px 2px",outline:"none",width:"100%"}}
+            />
+            <div style={{fontSize:7,color:"rgba(255,255,255,0.22)"}}>→ dropped at your cat's location · anyone can find it</div>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <button onClick={()=>setShowLetterInput(false)} style={{background:"transparent",border:"1px solid rgba(255,255,255,0.15)",color:"rgba(255,255,255,0.35)",fontFamily:ff,fontSize:7,padding:"6px 10px",cursor:"pointer"}}>cancel</button>
+              <button onClick={()=>{
+                if(letterVal.trim()){
+                  const s=gs.current;
+                  const myCat=s.cats.find(c=>c.id===s.myId);
+                  if(myCat){
+                    const letter={id:Date.now()+"_l",x:myCat.x,y:myCat.y-50,text:letterVal.trim().slice(0,40),life:1800,alpha:0};
+                    s.worldObjs.push({type:"letter",...letter,frame:0});
+                    channelRef.current?.publish("letter",{letter});
+                  }
+                  setLetterVal("");setShowLetterInput(false);
+                }
+              }} style={{background:"rgba(100,150,255,0.15)",border:"1px solid rgba(100,150,255,0.6)",color:"rgba(150,180,255,0.9)",fontFamily:ff,fontSize:7,padding:"6px 12px",cursor:"pointer"}}>drop ✉</button>
+            </div>
+          </div>
+        )}
+
+      {showInput&&(
           <div style={{position:"fixed",bottom:0,left:0,right:0,background:"rgba(8,8,16,0.97)",border:"2px solid #ff3232",borderBottom:"none",boxShadow:"0 0 30px rgba(255,50,50,0.25)",padding:"16px",zIndex:30,display:"flex",flexDirection:"column",gap:10}}>
             <span style={{fontSize:8,color:"#ff6666"}}>// confess to your cat</span>
             <input autoFocus maxLength={28} value={inputVal}
