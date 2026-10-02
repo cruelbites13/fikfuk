@@ -1124,7 +1124,14 @@ export default function App(){
           else {
             const la=obj.alpha*Math.min(1,obj.life/120);
             ctx.save();ctx.globalAlpha=la;
-            ctx.font="16px serif";ctx.fillText("✉",sx-8,sy+8);
+            // pixel envelope instead of emoji
+            ctx.fillStyle="rgba(150,180,255,0.8)";
+            ctx.fillRect(sx-8,sy-6,16,12);
+            ctx.strokeStyle="rgba(100,130,220,0.9)";ctx.lineWidth=1;
+            ctx.strokeRect(sx-8,sy-6,16,12);
+            // envelope flap lines
+            ctx.beginPath();ctx.moveTo(sx-8,sy-6);ctx.lineTo(sx,sy+1);ctx.lineTo(sx+8,sy-6);
+            ctx.stroke();
             const myCat2=gs.current.cats.find(c=>c.id===gs.current.myId);
             if(myCat2&&Math.hypot(myCat2.x-obj.x,myCat2.y-obj.y)<80){
               ctx.font=`7px ${ff}`;
