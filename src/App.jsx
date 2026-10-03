@@ -502,6 +502,8 @@ export default function App(){
     cam:{x:0,y:0},
     // drag camera
     camDrag:null,
+    // reset spectacle particles
+    particles:[],
   });
   const animRef      = useRef(null);
   const phaseRef     = useRef("loading");
@@ -695,10 +697,32 @@ export default function App(){
 
   useEffect(()=>{
     const iv=setInterval(()=>{
-      setResetIn(nextResetMs());
-      if(nextResetMs()<=1000){
+      const ms=nextResetMs();
+      setResetIn(ms);
+      const s=gs.current;
+      const myCat=s.cats.find(c=>c.id===s.myId);
+
+      // 30s before - spawn floating confession particles
+      if(ms<=30000&&ms>29000&&myCat){
+        s.cats.filter(c=>!c.isSys&&c.confessions.length>0).forEach(cat=>{
+          cat.confessions.forEach((text,i)=>{
+            s.particles.push({
+              text,
+              x:cat.x, y:cat.y,
+              vx:(Math.random()-0.5)*0.5,
+              vy:-0.8-Math.random()*0.5,
+              alpha:1, life:600,
+              delay:i*20,
+            });
+          });
+        });
+      }
+
+      if(ms<=1000){
         localStorage.removeItem("fikfuk_s");
         channelRef.current?.publish("reset",{});
+        // white flash
+        gs.current._flashTimer=30;
       }
     },1000);
     return()=>clearInterval(iv);
@@ -1046,6 +1070,33 @@ export default function App(){
       if(isNight()){
         ctx.fillStyle="rgba(0,0,10,0.15)";ctx.fillRect(0,0,W,H);
       }
+      // ── white flash on reset ──
+      if(s._flashTimer>0){
+        s._flashTimer--;
+        ctx.fillStyle=`rgba(255,255,255,${s._flashTimer/30})`;
+        ctx.fillRect(0,0,W,H);
+      }
+      // ── reset spectacle overlay ──
+      const msLeft=nextResetMs();
+      if(msLeft<60000){
+        // sky goes red
+        const redAlpha=Math.min(0.6,(60000-msLeft)/60000*0.6);
+        ctx.fillStyle=`rgba(180,0,0,${redAlpha})`;
+        ctx.fillRect(0,0,W,H);
+      }
+      if(msLeft<10000){
+        // big countdown center screen
+        const secs=Math.ceil(msLeft/1000);
+        ctx.save();
+        ctx.font=`${Math.min(80,W/4)}px ${ff}`;
+        ctx.fillStyle=`rgba(255,50,50,${0.8+Math.sin(Date.now()*0.01)*0.2})`;
+        ctx.textAlign="center";
+        ctx.fillText(secs,W/2,H/2);
+        ctx.font=`14px ${ff}`;
+        ctx.fillStyle="rgba(255,150,150,0.7)";
+        ctx.fillText("the world resets",W/2,H/2+50);
+        ctx.restore();
+      }
       ctx.save();
       const bx=-cam.x,by=-cam.y;
       ctx.strokeStyle="rgba(255,50,50,0.15)";ctx.lineWidth=3;
@@ -1059,6 +1110,22 @@ export default function App(){
         ctx.fillStyle=`rgba(200,200,255,${Math.min(1,st.a+nightBoost+Math.sin(s.frame*st.speed)*0.12)})`;ctx.fill();
       });
       for(let gy=0;gy<H;gy+=4){ctx.fillStyle="rgba(0,0,0,0.06)";ctx.fillRect(0,gy,W,2);}
+
+      // ── floating confession particles ──
+      s.particles=s.particles.filter(p=>p.life>0);
+      s.particles.forEach(p=>{
+        if(p.delay>0){p.delay--;return;}
+        p.life--;
+        p.x+=p.vx; p.y+=p.vy;
+        p.alpha=Math.min(1,p.life/60);
+        const{sx:px,sy:py}=w2s(p.x,p.y);
+        ctx.save();
+        ctx.globalAlpha=p.alpha*0.85;
+        ctx.font=`7px ${ff}`;
+        ctx.fillStyle=`hsl(${10+Math.random()*20},80%,75%)`;
+        ctx.fillText(p.text,px,py);
+        ctx.restore();
+      });
       // ── Draw Confession Wall ──
       const wallSx=WALL_X-cam.x-WALL_W/2;
       const wallSy=WALL_Y-cam.y-WALL_H/2;
