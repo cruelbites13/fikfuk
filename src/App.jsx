@@ -951,13 +951,12 @@ export default function App(){
           if(nearCat){
             cat._whisperTimer=(cat._whisperTimer||0)+1;
             cat._whisperTarget=nearCat.id;
-            if(cat._whisperTimer===180&&cat.confessions.length>0){
-              // send whisper
+            // whisper sends silently - does NOT stun the cat
+            if(cat._whisperTimer===300&&cat.confessions.length>0){
               const text=cat.confessions[cat.confessions.length-1];
               channelRef.current?.publish("whisper",{targetId:nearCat.id,text});
               cat._whisperTimer=0;
-              // show sent indicator
-              s._whisperSent={text:"✉ whispered",life:120,alpha:1};
+              s._whisperSent={text:"whispered",life:120,alpha:1};
             }
           } else {
             cat._whisperTimer=0;
@@ -1773,8 +1772,9 @@ export default function App(){
     const s=gs.current;
     // joystick zone - left quarter of screen, bottom half
     const cv=canvasRef.current;
-    if(cv&&sx<cv.width*0.35&&sy>cv.height*0.5){
-      s.joystick={active:true,startX:sx,startY:sy,dx:0,dy:0,touchId:e.touches?.[0]?.identifier??-1};
+    // joystick: anywhere on left 40% of screen below 40% height
+    if(cv&&sx<cv.width*0.4&&sy>cv.height*0.4&&!s.laserOn){
+      s.joystick={active:true,startX:sx,startY:sy,dx:0,dy:0};
       return;
     }
     const cat=catAtScreen(sx,sy);
@@ -1806,11 +1806,15 @@ export default function App(){
     const s=gs.current;
     // handle joystick touch
     if(s.joystick?.active&&e.touches){
+      const r=canvasRef.current.getBoundingClientRect();
+      // find the touch that started in joystick zone
       for(let t of e.touches){
-        if(t.identifier===s.joystick.touchId){
-          const r=canvasRef.current.getBoundingClientRect();
-          s.joystick.dx=t.clientX-r.left-s.joystick.startX;
-          s.joystick.dy=t.clientY-r.top-s.joystick.startY;
+        const tx=t.clientX-r.left;
+        const ty=t.clientY-r.top;
+        const distFromStart=Math.hypot(tx-s.joystick.startX,ty-s.joystick.startY);
+        if(distFromStart<150){
+          s.joystick.dx=tx-s.joystick.startX;
+          s.joystick.dy=ty-s.joystick.startY;
           return;
         }
       }
