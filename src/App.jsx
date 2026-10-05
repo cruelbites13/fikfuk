@@ -374,6 +374,26 @@ const NPC_CONFESSIONS=[
 // ── Spawn rates (max alive at once) ──────────────────────────────────────────
 const SPAWN_LIMITS = { ufo:2, fossil:3, wildcat:3, mouse:5, human:1, diablo:1 };
 
+// ── Secret Rooms ─────────────────────────────────────────────────────────────
+// fixed positions per epoch so all players share them
+function getSecretRooms(){
+  const rooms=[];
+  const seed=Math.floor((Date.now()-1700000000000)/(3*60*60*1000));
+  // deterministic positions based on session seed
+  for(let i=0;i<8;i++){
+    const angle=(seed*7+i*137.5)%360*(Math.PI/180);
+    const dist=1500+((seed*13+i*97)%3000);
+    rooms.push({
+      x:WORLD_W/2+Math.cos(angle)*dist,
+      y:WORLD_H/2+Math.sin(angle)*dist,
+      radius:80,
+      confession:NPC_CONFESSIONS[(seed*3+i*7)%NPC_CONFESSIONS.length],
+    });
+  }
+  return rooms;
+}
+const SECRET_ROOMS=getSecretRooms();
+
 // ── Confession Wall ───────────────────────────────────────────────────────────
 const WALL_X = 5000; // center of world
 const WALL_Y = 1800; // north of spawn
@@ -607,6 +627,7 @@ export default function App(){
       name:myCat.name,palId:myCat.palId,
       x:myCat.x,y:myCat.y,flip:myCat.flip,
       confessions:myCat.confessions,
+      territory:myCat._territory||null,
     });
     const addRemoteCat=(d,cid)=>{
       const s=gs.current;
@@ -616,6 +637,7 @@ export default function App(){
       const cat=makeCat(d.x??WORLD_W/2,d.y??WORLD_H/2,d.palId??0,d.name,false,false,null,cid);
       cat.confessions=d.confessions??[];
       cat.flip=d.flip??false;
+      if(d.territory) cat._territory=d.territory;
       s.cats.push(cat);
       setOnlineCount(s.cats.filter(c=>!c.isSys).length);
     };
@@ -654,6 +676,17 @@ export default function App(){
       if(msg.clientId===clientId.current)return;
       const l=msg.data.letter;
       gs.current.worldObjs.push({type:"letter",...l,frame:0,alpha:0});
+    });
+
+    channel.subscribe("whisper",(msg)=>{
+      if(msg.clientId===clientId.current)return;
+      // only show if it's addressed to me
+      if(msg.data.targetId!==clientId.current)return;
+      const s=gs.current;
+      const myCat=s.cats.find(c=>c.id===s.myId);
+      if(myCat){
+        s._whisperMsg={text:msg.data.text,life:300,alpha:0};
+      }
     });
 
     channel.subscribe("reaction",(msg)=>{
@@ -858,7 +891,6 @@ export default function App(){
             if(pdist<140){
               cat.revealAlpha=Math.min(1,cat.revealAlpha+0.04);
               cat.revealTimer=100;
-              // cycle through his messages slowly
               cat._cycleTimer=(cat._cycleTimer||0)+1;
               if(cat._cycleTimer>240){
                 cat._cycleTimer=0;
@@ -871,7 +903,55 @@ export default function App(){
               }
             }
           }
+          // leave glowing paw prints while moving
+          if(cat.state==="run"){
+            cat._pawTimer=(cat._pawTimer||0)+1;
+            if(cat._pawTimer>40){
+              cat._pawTimer=0;
+              toAdd.push({
+                type:"pawprint",
+                id:`paw_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
+                x:cat.x+Math.random()*10-5,
+                y:cat.y+10+Math.random()*6,
+                life:600, alpha:0, frame:0,
+              });
+            }
+          }
         }
+        // ── territory claiming ──
+        if(cat.isOwn&&!cat.isSys){
+          const spd3=Math.hypot(cat.vx,cat.vy);
+          if(spd3<0.3){
+            cat._sitTimer=(cat._sitTimer||0)+1;
+            if(cat._sitTimer===120){
+              cat._territory={x:cat.x,y:cat.y,radius:80,name:cat.name,palBody:cat.pal.body};
+              s._myTerritory=cat._territory;
+            }
+          } else {
+            cat._sitTimer=0;
+          }
+        }
+
+        // ── whisper proximity ──
+        if(cat.isOwn&&!cat.isSys){
+          const nearCat=s.cats.find(c=>!c.isOwn&&!c.isSys&&!c.isGhost&&Math.hypot(cat.x-c.x,cat.y-c.y)<50);
+          if(nearCat){
+            cat._whisperTimer=(cat._whisperTimer||0)+1;
+            cat._whisperTarget=nearCat.id;
+            if(cat._whisperTimer===180&&cat.confessions.length>0){
+              // send whisper
+              const text=cat.confessions[cat.confessions.length-1];
+              channelRef.current?.publish("whisper",{targetId:nearCat.id,text});
+              cat._whisperTimer=0;
+              // show sent indicator
+              s._whisperSent={text:"✉ whispered",life:120,alpha:1};
+            }
+          } else {
+            cat._whisperTimer=0;
+            cat._whisperTarget=null;
+          }
+        }
+
         // ── mood system ──
         if(cat.isOwn&&!cat.isSys){
           if(!cat.mood) cat.mood="neutral";
@@ -1090,6 +1170,13 @@ export default function App(){
           obj.life=(obj.life||0)-1;
           if(obj.life<=0) toRemove.add(obj.id);
         }
+        // Paw prints - fade in then out
+        if(obj.type==="pawprint"){
+          obj.life--;
+          if(obj.life<=0) toRemove.add(obj.id);
+          else if(obj.life>500) obj.alpha=Math.min(0.7,(600-obj.life)/100*0.7);
+          else obj.alpha=Math.max(0,obj.life/500*0.7);
+        }
         // Black hole - pulls nearby cats
         if(obj.type==="blackhole"){
           obj.frame++;
@@ -1145,6 +1232,7 @@ export default function App(){
       if(s.frame%300===0&&myCat){
         const sess=loadSession();
         if(sess)saveSession({...sess,x:myCat.x,y:myCat.y,confessions:myCat.confessions});
+        if(myCat._territory&&myCat._updatePresence)myCat._updatePresence();
       }
       const skyCol=getSkyColor();
       ctx.fillStyle=skyCol;ctx.fillRect(0,0,W,H);
@@ -1193,6 +1281,32 @@ export default function App(){
       });
       for(let gy=0;gy<H;gy+=4){ctx.fillStyle="rgba(0,0,0,0.06)";ctx.fillRect(0,gy,W,2);}
 
+      // ── Confession Tide ──
+      // tide sweeps across world every 15 min (54000 frames)
+      const TIDE_PERIOD = 54000;
+      const tidePhase = s.frame % TIDE_PERIOD;
+      const tideActive = tidePhase < WORLD_W / 2; // active for first half
+      if(tideActive){
+        // world x position of tide wave front
+        const tideWorldX = tidePhase * 2;
+        const tideSx = tideWorldX - cam.x;
+        // draw wave
+        const tideGrad = ctx.createLinearGradient(tideSx-80,0,tideSx+40,0);
+        tideGrad.addColorStop(0,"rgba(100,180,255,0)");
+        tideGrad.addColorStop(0.5,"rgba(150,210,255,0.12)");
+        tideGrad.addColorStop(1,"rgba(100,180,255,0)");
+        ctx.fillStyle=tideGrad;
+        ctx.fillRect(tideSx-80,0,120,H);
+        // reveal confessions of cats the tide touches
+        s.cats.forEach(cat=>{
+          const{sx:csx}=w2s(cat.x,cat.y);
+          if(Math.abs(csx-tideSx)<60&&cat.confessions.length>0){
+            cat.revealAlpha=Math.min(1,cat.revealAlpha+0.08);
+            cat.revealTimer=90;
+          }
+        });
+      }
+
       // ── floating confession particles ──
       s.particles=s.particles.filter(p=>p.life>0);
       s.particles.forEach(p=>{
@@ -1208,6 +1322,61 @@ export default function App(){
         ctx.fillText(p.text,px,py);
         ctx.restore();
       });
+      // ── Territories ──
+      s.cats.filter(c=>!c.isSys&&c._territory).forEach(c=>{
+        const t=c._territory;
+        const{sx:tx,sy:ty}=w2s(t.x,t.y);
+        if(tx<-t.radius||tx>W+t.radius||ty<-t.radius||ty>H+t.radius)return;
+        ctx.save();
+        ctx.globalAlpha=0.12;
+        ctx.fillStyle=t.palBody||'#ffffff';
+        ctx.beginPath();ctx.arc(tx,ty,t.radius,0,Math.PI*2);ctx.fill();
+        ctx.globalAlpha=0.25;
+        ctx.strokeStyle=t.palBody||'#ffffff';
+        ctx.lineWidth=1;
+        ctx.setLineDash([4,4]);
+        ctx.beginPath();ctx.arc(tx,ty,t.radius,0,Math.PI*2);ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha=0.4;
+        ctx.font=`6px ${ff}`;
+        ctx.fillStyle=t.palBody||'#ffffff';
+        const tw=ctx.measureText(t.name).width;
+        ctx.fillText(t.name,tx-tw/2,ty+t.radius+10);
+        ctx.restore();
+      });
+
+      // ── Secret Rooms ──
+      const myCatSR=gs.current.cats.find(c=>c.id===gs.current.myId);
+      SECRET_ROOMS.forEach((room,i)=>{
+        const rsx=room.x-cam.x;
+        const rsy=room.y-cam.y;
+        if(rsx<-room.radius||rsx>W+room.radius||rsy<-room.radius||rsy>H+room.radius)return;
+        // check if player is inside
+        const inside=myCatSR&&Math.hypot(myCatSR.x-room.x,myCatSR.y-room.y)<room.radius;
+        ctx.save();
+        if(inside){
+          // full reveal
+          ctx.globalAlpha=0.85;
+          ctx.fillStyle="rgba(0,0,0,0.7)";
+          ctx.beginPath();ctx.arc(rsx,rsy,room.radius,0,Math.PI*2);ctx.fill();
+          ctx.strokeStyle="rgba(200,150,255,0.4)";ctx.lineWidth=1;ctx.stroke();
+          // confession text
+          ctx.font=`7px ${ff}`;
+          const tw=ctx.measureText(room.confession).width;
+          ctx.fillStyle="rgba(220,180,255,0.9)";
+          ctx.fillText(room.confession,rsx-tw/2,rsy);
+          ctx.font=`6px ${ff}`;
+          ctx.fillStyle="rgba(180,140,255,0.5)";
+          ctx.fillText("secret room",rsx-22,rsy+16);
+        } else {
+          // subtle hint from outside
+          ctx.globalAlpha=0.15+Math.sin(s.frame*0.03+i)*0.05;
+          ctx.fillStyle="rgba(150,100,255,0.3)";
+          ctx.beginPath();ctx.arc(rsx,rsy,room.radius,0,Math.PI*2);ctx.fill();
+        }
+        ctx.restore();
+      });
+
       // ── Draw Confession Wall ──
       const wallSx=WALL_X-cam.x-WALL_W/2;
       const wallSy=WALL_Y-cam.y-WALL_H/2;
@@ -1296,6 +1465,23 @@ export default function App(){
           ctx.fillText(obj.text,sx-tw/2,sy-1);
           ctx.restore();
         }
+        if(obj.type==="pawprint"){
+          if(obj.alpha>0){
+            const{sx:px,sy:py}=w2s(obj.x,obj.y);
+            if(px>-20&&px<W+20&&py>-20&&py<H+20){
+              ctx.save();
+              ctx.globalAlpha=obj.alpha;
+              ctx.fillStyle="#e07b39";
+              // main pad
+              ctx.beginPath();ctx.ellipse(px,py,5,4,0,0,Math.PI*2);ctx.fill();
+              // toe beans
+              [[-4,-5],[0,-6],[4,-5],[-6,-3],[6,-3]].forEach(([tx,ty])=>{
+                ctx.beginPath();ctx.ellipse(px+tx,py+ty,2,2,0,0,Math.PI*2);ctx.fill();
+              });
+              ctx.restore();
+            }
+          }
+        }
         if(obj.type==="letter"){
           obj.alpha=Math.min(1,(obj.alpha||0)+0.01);
           obj.life=(obj.life||1800)-1;
@@ -1380,6 +1566,56 @@ export default function App(){
         }
       });
       if(laser.active&&!s.camDrag)drawLaser(ctx,laser.sx,laser.sy,s.trail,s.frame);
+
+      // ── whisper UI ──
+      const myCatW=s.cats.find(c=>c.id===s.myId);
+      if(myCatW&&myCatW._whisperTimer>0){
+        const{sx:wx,sy:wy}=w2s(myCatW.x,myCatW.y);
+        const pct=myCatW._whisperTimer/180;
+        ctx.save();
+        ctx.strokeStyle=`rgba(150,180,255,${0.6+pct*0.4})`;
+        ctx.lineWidth=2;
+        ctx.beginPath();
+        ctx.arc(wx+5.5*P,wy+5*P,28,-Math.PI/2,-Math.PI/2+pct*Math.PI*2);
+        ctx.stroke();
+        ctx.font=`6px ${ff}`;
+        ctx.fillStyle="rgba(150,180,255,0.7)";
+        ctx.fillText("whispering...",wx-15,wy-30);
+        ctx.restore();
+      }
+      // received whisper
+      if(s._whisperMsg){
+        s._whisperMsg.life--;
+        s._whisperMsg.alpha=Math.min(1,s._whisperMsg.life/60);
+        if(s._whisperMsg.life<=0){s._whisperMsg=null;}
+        else {
+          ctx.save();
+          ctx.globalAlpha=s._whisperMsg.alpha;
+          ctx.font=`8px ${ff}`;
+          const tw=ctx.measureText(s._whisperMsg.text).width;
+          ctx.fillStyle="rgba(8,12,30,0.95)";
+          ctx.strokeStyle="rgba(150,180,255,0.8)";ctx.lineWidth=1.5;
+          rrect(ctx,W/2-tw/2-12,H/2-60,tw+24,32,4);
+          ctx.fill();ctx.stroke();
+          ctx.fillStyle="rgba(180,210,255,0.95)";
+          ctx.fillText("✉ "+s._whisperMsg.text,W/2-tw/2,H/2-40);
+          ctx.restore();
+        }
+      }
+      // sent whisper indicator
+      if(s._whisperSent){
+        s._whisperSent.life--;
+        s._whisperSent.alpha=Math.min(1,s._whisperSent.life/30);
+        if(s._whisperSent.life<=0){s._whisperSent=null;}
+        else {
+          ctx.save();
+          ctx.globalAlpha=s._whisperSent.alpha;
+          ctx.font=`7px ${ff}`;
+          ctx.fillStyle="rgba(150,180,255,0.8)";
+          ctx.fillText(s._whisperSent.text,W/2-40,H/2-80);
+          ctx.restore();
+        }
+      }
       const MM_W=130,MM_H=90,MM_X=W-MM_W-12,MM_Y=H-MM_H-70;
       ctx.save();
       // background
@@ -1433,6 +1669,13 @@ export default function App(){
       const wmy=MM_Y+(WALL_Y/WORLD_H)*MM_H;
       ctx.fillStyle="rgba(255,200,100,0.6)";
       ctx.fillRect(wmx-3,wmy-2,6,3);
+      // patates paw prints on minimap (subtle)
+      s.worldObjs.filter(o=>o.type==="pawprint"&&o.alpha>0.3).forEach(o=>{
+        const pmx=MM_X+(o.x/WORLD_W)*MM_W;
+        const pmy=MM_Y+(o.y/WORLD_H)*MM_H;
+        ctx.fillStyle=`rgba(224,123,57,${o.alpha*0.5})`;
+        ctx.fillRect(pmx,pmy,1,1);
+      });
       // blackhole on minimap
       const bh=s.worldObjs.find(o=>o.type==="blackhole");
       if(bh){
