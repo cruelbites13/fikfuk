@@ -524,6 +524,7 @@ export default function App(){
     camDrag:null,
     // reset spectacle particles
     particles:[],
+    joystick:{active:false,startX:0,startY:0,dx:0,dy:0},
   });
   const animRef      = useRef(null);
   const phaseRef     = useRef("loading");
@@ -846,13 +847,25 @@ export default function App(){
           cat.flip=dx<0;
           if(dist<70){cat.revealAlpha=Math.min(1,cat.revealAlpha+0.05);cat.revealTimer=80;}
         } else if(cat.isOwn&&!cat.isSys){
-          cat.wanderTimer--;
-          if(cat.wanderTimer<=0){
-            cat.wanderAngle+=(Math.random()-0.5)*1.5;
-            cat.wanderTimer=80+Math.random()*140;
-            cat.state=Math.random()>0.45?"sit":"run";
+          const joy=s.joystick;
+          if(joy.active&&(Math.abs(joy.dx)>5||Math.abs(joy.dy)>5)){
+            // joystick overrides wander
+            const jlen=Math.hypot(joy.dx,joy.dy);
+            const jspd=Math.min(jlen/30,1)*3;
+            cat.vx+=(joy.dx/jlen)*jspd*0.15;
+            cat.vy+=(joy.dy/jlen)*jspd*0.15;
+            cat.flip=joy.dx<0;
+            cat.state="run";
+            cat.wanderTimer=60;
+          } else {
+            cat.wanderTimer--;
+            if(cat.wanderTimer<=0){
+              cat.wanderAngle+=(Math.random()-0.5)*1.5;
+              cat.wanderTimer=80+Math.random()*140;
+              cat.state=Math.random()>0.45?"sit":"run";
+            }
+            if(cat.state==="run"){cat.vx+=Math.cos(cat.wanderAngle)*0.03;cat.vy+=Math.sin(cat.wanderAngle)*0.03;cat.flip=cat.vx<0;}
           }
-          if(cat.state==="run"){cat.vx+=Math.cos(cat.wanderAngle)*0.03;cat.vy+=Math.sin(cat.wanderAngle)*0.03;cat.flip=cat.vx<0;}
         } else if(cat.sysType==="oracle"){
           // slow mystical drift
           cat.wanderTimer--;
@@ -921,9 +934,9 @@ export default function App(){
         // ── territory claiming ──
         if(cat.isOwn&&!cat.isSys){
           const spd3=Math.hypot(cat.vx,cat.vy);
-          if(spd3<0.3){
+          if(spd3<0.1&&cat.state==="sit"){
             cat._sitTimer=(cat._sitTimer||0)+1;
-            if(cat._sitTimer===120){
+            if(cat._sitTimer===180){
               cat._territory={x:cat.x,y:cat.y,radius:80,name:cat.name,palBody:cat.pal.body};
               s._myTerritory=cat._territory;
             }
@@ -1567,6 +1580,25 @@ export default function App(){
       });
       if(laser.active&&!s.camDrag)drawLaser(ctx,laser.sx,laser.sy,s.trail,s.frame);
 
+      // ── joystick draw ──
+      const joy=s.joystick;
+      const JX=80,JY=H-100,JR=45;
+      ctx.save();
+      // base ring
+      ctx.globalAlpha=0.25;
+      ctx.strokeStyle="#ffffff";ctx.lineWidth=2;
+      ctx.beginPath();ctx.arc(JX,JY,JR,0,Math.PI*2);ctx.stroke();
+      ctx.globalAlpha=0.08;
+      ctx.fillStyle="#ffffff";
+      ctx.beginPath();ctx.arc(JX,JY,JR,0,Math.PI*2);ctx.fill();
+      // stick
+      const stickX=joy.active?Math.min(JR*0.7,Math.max(-JR*0.7,joy.dx*0.6)):0;
+      const stickY=joy.active?Math.min(JR*0.7,Math.max(-JR*0.7,joy.dy*0.6)):0;
+      ctx.globalAlpha=joy.active?0.7:0.3;
+      ctx.fillStyle="#ffffff";
+      ctx.beginPath();ctx.arc(JX+stickX,JY+stickY,18,0,Math.PI*2);ctx.fill();
+      ctx.restore();
+
       // ── whisper UI ──
       const myCatW=s.cats.find(c=>c.id===s.myId);
       if(myCatW&&myCatW._whisperTimer>0){
@@ -1739,6 +1771,12 @@ export default function App(){
     if(phaseRef.current!=="play")return;
     const{sx,sy}=getPos(e);
     const s=gs.current;
+    // joystick zone - left quarter of screen, bottom half
+    const cv=canvasRef.current;
+    if(cv&&sx<cv.width*0.35&&sy>cv.height*0.5){
+      s.joystick={active:true,startX:sx,startY:sy,dx:0,dy:0,touchId:e.touches?.[0]?.identifier??-1};
+      return;
+    }
     const cat=catAtScreen(sx,sy);
     const now=Date.now();
     if(cat){
@@ -1765,8 +1803,19 @@ export default function App(){
   },[]);
   const onPointerMove=useCallback((e)=>{
     if(phaseRef.current!=="play")return;
-    const{sx,sy}=getPos(e);
     const s=gs.current;
+    // handle joystick touch
+    if(s.joystick?.active&&e.touches){
+      for(let t of e.touches){
+        if(t.identifier===s.joystick.touchId){
+          const r=canvasRef.current.getBoundingClientRect();
+          s.joystick.dx=t.clientX-r.left-s.joystick.startX;
+          s.joystick.dy=t.clientY-r.top-s.joystick.startY;
+          return;
+        }
+      }
+    }
+    const{sx,sy}=getPos(e);
     if(s.drag){
       const wpos=s2w(sx,sy);
       const cat=s.cats.find(c=>c.id===s.drag.catId);
@@ -1794,6 +1843,7 @@ export default function App(){
     const s=gs.current;
     if(s.drag){const cat=s.cats.find(c=>c.id===s.drag.catId);if(cat)cat.grabbed=false;s.drag=null;}
     s.camDrag=null;
+    s.joystick={active:false,startX:0,startY:0,dx:0,dy:0};
     if(!s.laserOn){s.laser.active=false;s.trail=[];}
   },[]);
   const onPointerLeave=useCallback(()=>{
