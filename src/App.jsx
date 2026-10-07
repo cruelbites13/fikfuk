@@ -832,6 +832,9 @@ export default function App(){
       const{laser,cam}=s;
       const myCat=s.cats.find(c=>c.id===s.myId);
       const laserWorld=laser.active?s2w(laser.sx,laser.sy):{wx:-9999,wy:-9999};
+      const toRemove=new Set();
+      const toAdd=[];
+
       s.cats.forEach(cat=>{
         if(cat.grabbed){cat.frame++;cat.state="sit";return;}
         cat.frame++;
@@ -1019,8 +1022,6 @@ export default function App(){
       const laserWx=laser.active?laserWorld.wx:-9999;
       const laserWy=laser.active?laserWorld.wy:-9999;
 
-      const toRemove=new Set();
-      const toAdd=[];
 
       s.worldObjs.forEach(obj=>{
         obj.frame=(obj.frame||0)+1;
@@ -1497,8 +1498,9 @@ export default function App(){
         if(obj.type==="letter"){
           obj.alpha=Math.min(1,(obj.alpha||0)+0.01);
           obj.life=(obj.life||1800)-1;
-          if(obj.life<=0){toRemove.add(obj.id);}
-          else {
+          if(obj.life<=0){
+            s.worldObjs=s.worldObjs.filter(o=>o.id!==obj.id);
+          } else {
             const la=obj.alpha*Math.min(1,obj.life/120);
             ctx.save();ctx.globalAlpha=la;
             // pixel envelope instead of emoji
