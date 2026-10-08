@@ -851,12 +851,12 @@ export default function App(){
           if(dist<70){cat.revealAlpha=Math.min(1,cat.revealAlpha+0.05);cat.revealTimer=80;}
         } else if(cat.isOwn&&!cat.isSys){
           const joy=s.joystick;
-          if(joy.active&&(Math.abs(joy.dx)>5||Math.abs(joy.dy)>5)){
-            // joystick overrides wander
+          if(joy.active&&Math.hypot(joy.dx,joy.dy)>8){
             const jlen=Math.hypot(joy.dx,joy.dy);
-            const jspd=Math.min(jlen/30,1)*3;
-            cat.vx+=(joy.dx/jlen)*jspd*0.15;
-            cat.vy+=(joy.dy/jlen)*jspd*0.15;
+            const jclamped=Math.min(jlen,80);
+            const jspd=(jclamped/80)*2.5;
+            cat.vx+=(joy.dx/jlen)*jspd*0.2;
+            cat.vy+=(joy.dy/jlen)*jspd*0.2;
             cat.flip=joy.dx<0;
             cat.state="run";
             cat.wanderTimer=60;
@@ -1581,24 +1581,26 @@ export default function App(){
       });
       if(laser.active&&!s.camDrag)drawLaser(ctx,laser.sx,laser.sy,s.trail,s.frame);
 
-      // ── joystick draw ──
+      // ── joystick draw (only when active) ──
       const joy=s.joystick;
-      const JX=80,JY=H-100,JR=45;
-      ctx.save();
-      // base ring
-      ctx.globalAlpha=0.25;
-      ctx.strokeStyle="#ffffff";ctx.lineWidth=2;
-      ctx.beginPath();ctx.arc(JX,JY,JR,0,Math.PI*2);ctx.stroke();
-      ctx.globalAlpha=0.08;
-      ctx.fillStyle="#ffffff";
-      ctx.beginPath();ctx.arc(JX,JY,JR,0,Math.PI*2);ctx.fill();
-      // stick
-      const stickX=joy.active?Math.min(JR*0.7,Math.max(-JR*0.7,joy.dx*0.6)):0;
-      const stickY=joy.active?Math.min(JR*0.7,Math.max(-JR*0.7,joy.dy*0.6)):0;
-      ctx.globalAlpha=joy.active?0.7:0.3;
-      ctx.fillStyle="#ffffff";
-      ctx.beginPath();ctx.arc(JX+stickX,JY+stickY,18,0,Math.PI*2);ctx.fill();
-      ctx.restore();
+      if(joy.active){
+        const JX=joy.startX, JY=joy.startY, JR=50;
+        const stickX=Math.min(JR*0.8,Math.max(-JR*0.8,joy.dx));
+        const stickY=Math.min(JR*0.8,Math.max(-JR*0.8,joy.dy));
+        ctx.save();
+        // outer ring
+        ctx.globalAlpha=0.3;
+        ctx.strokeStyle="#ffffff";ctx.lineWidth=2;
+        ctx.beginPath();ctx.arc(JX,JY,JR,0,Math.PI*2);ctx.stroke();
+        ctx.globalAlpha=0.08;
+        ctx.fillStyle="#ffffff";
+        ctx.beginPath();ctx.arc(JX,JY,JR,0,Math.PI*2);ctx.fill();
+        // inner stick
+        ctx.globalAlpha=0.7;
+        ctx.fillStyle="#ffffff";
+        ctx.beginPath();ctx.arc(JX+stickX,JY+stickY,20,0,Math.PI*2);ctx.fill();
+        ctx.restore();
+      }
 
       // ── whisper UI ──
       const myCatW=s.cats.find(c=>c.id===s.myId);
@@ -1774,12 +1776,12 @@ export default function App(){
     const s=gs.current;
     // joystick zone - left quarter of screen, bottom half
     const cv=canvasRef.current;
-    // joystick: anywhere on left 40% of screen below 40% height
-    if(cv&&sx<cv.width*0.4&&sy>cv.height*0.4&&!s.laserOn){
+    const cat=catAtScreen(sx,sy);
+    // joystick: tap anywhere when laser off and not tapping a cat
+    if(!cat&&!s.laserOn&&cv){
       s.joystick={active:true,startX:sx,startY:sy,dx:0,dy:0};
       return;
     }
-    const cat=catAtScreen(sx,sy);
     const now=Date.now();
     if(cat){
       if(lastTap.current.id===cat.id&&now-lastTap.current.time<400){
@@ -1806,20 +1808,13 @@ export default function App(){
   const onPointerMove=useCallback((e)=>{
     if(phaseRef.current!=="play")return;
     const s=gs.current;
-    // handle joystick touch
-    if(s.joystick?.active&&e.touches){
-      const r=canvasRef.current.getBoundingClientRect();
-      // find the touch that started in joystick zone
-      for(let t of e.touches){
-        const tx=t.clientX-r.left;
-        const ty=t.clientY-r.top;
-        const distFromStart=Math.hypot(tx-s.joystick.startX,ty-s.joystick.startY);
-        if(distFromStart<150){
-          s.joystick.dx=tx-s.joystick.startX;
-          s.joystick.dy=ty-s.joystick.startY;
-          return;
-        }
-      }
+    // joystick move tracking
+    if(s.joystick?.active){
+      s.joystick.dx=sx-s.joystick.startX;
+      s.joystick.dy=sy-s.joystick.startY;
+      // if laser is on, don't use joystick
+      if(s.laserOn) return;
+      return;
     }
     const{sx,sy}=getPos(e);
     if(s.drag){
