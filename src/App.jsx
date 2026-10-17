@@ -710,7 +710,9 @@ export default function App(){
       const cat=gs.current.cats.find(c=>c.id===msg.clientId);
       if(!cat)return;
       const d=msg.data;
-      cat.x=d.x;cat.y=d.y;cat.vx=d.vx;cat.vy=d.vy;cat.flip=d.flip;cat.state=d.state;
+      cat._tx=d.x;cat._ty=d.y;cat.flip=d.flip;cat.state=d.state;
+      if(Math.hypot(d.x-cat.x,d.y-cat.y)>600){cat.x=d.x;cat.y=d.y;}
+      cat.vx=0;cat.vy=0;
     });
     channel.subscribe("wall",(msg)=>{
       if(msg.clientId===clientId.current)return;
@@ -787,6 +789,7 @@ export default function App(){
       });
     };
     window.__fikfukSync=sendSync;
+    window.__fikfukPub=()=>window.__fikfukPubN||0;
     channel.subscribe("sync",(msg)=>{
       if(msg.clientId===clientId.current)return;
       const s=gs.current;
@@ -940,6 +943,11 @@ export default function App(){
       s.cats.forEach(cat=>{
         if(cat.grabbed){cat.frame++;cat.state="sit";return;}
         cat.frame++;
+        if(!cat.isOwn&&!cat.isSys&&cat._tx!==undefined){
+          cat.x+=(cat._tx-cat.x)*0.25;
+          cat.y+=(cat._ty-cat.y)*0.25;
+          cat.vx=0;cat.vy=0;
+        }
         const dx=laserWorld.wx-(cat.x+5.5*P);
         const dy=laserWorld.wy-(cat.y+5*P);
         const dist=Math.hypot(dx,dy);
@@ -1404,9 +1412,15 @@ export default function App(){
       }
       if(myCat&&channelRef.current){
         const now=Date.now();
-        if(now-moveThrottle.current>100){
-          moveThrottle.current=now;
-          channelRef.current.publish("move",{x:myCat.x,y:myCat.y,vx:myCat.vx,vy:myCat.vy,flip:myCat.flip,state:myCat.state});
+        if(now-moveThrottle.current>250){
+          const lm=s._lastMove||{x:-1e5,y:-1e5,state:""};
+          const moved=Math.hypot(myCat.x-lm.x,myCat.y-lm.y)>3||myCat.state!==lm.state;
+          if(moved&&!document.hidden){
+            moveThrottle.current=now;
+            s._lastMove={x:myCat.x,y:myCat.y,state:myCat.state};
+            window.__fikfukPubN=(window.__fikfukPubN||0)+1;
+            channelRef.current.publish("move",{x:Math.round(myCat.x),y:Math.round(myCat.y),flip:myCat.flip,state:myCat.state});
+          }
         }
       }
       if(s.frame%300===0&&myCat){
