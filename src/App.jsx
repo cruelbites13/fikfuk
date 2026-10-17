@@ -831,6 +831,12 @@ export default function App(){
       const W=cv.width,H=cv.height;
       const{laser,cam}=s;
       const myCat=s.cats.find(c=>c.id===s.myId);
+      if(myCat&&!s.camDrag&&!s.drag){
+        const camTx=Math.max(0,Math.min(WORLD_W-W,myCat.x+5.5*P-W/2));
+        const camTy=Math.max(0,Math.min(WORLD_H-H,myCat.y+5*P-H/2));
+        cam.x+=(camTx-cam.x)*0.1;
+        cam.y+=(camTy-cam.y)*0.1;
+      }
       const laserWorld=laser.active?s2w(laser.sx,laser.sy):{wx:-9999,wy:-9999};
       const toRemove=new Set();
       const toAdd=[];
@@ -861,13 +867,7 @@ export default function App(){
             cat.state="run";
             cat.wanderTimer=60;
           } else {
-            cat.wanderTimer--;
-            if(cat.wanderTimer<=0){
-              cat.wanderAngle+=(Math.random()-0.5)*1.5;
-              cat.wanderTimer=80+Math.random()*140;
-              cat.state=Math.random()>0.45?"sit":"run";
-            }
-            if(cat.state==="run"){cat.vx+=Math.cos(cat.wanderAngle)*0.03;cat.vy+=Math.sin(cat.wanderAngle)*0.03;cat.flip=cat.vx<0;}
+            cat.state="sit";
           }
         } else if(cat.sysType==="oracle"){
           // slow mystical drift
@@ -1776,6 +1776,11 @@ export default function App(){
     const s=gs.current;
     // joystick zone - left quarter of screen, bottom half
     const cv=canvasRef.current;
+    if(e.button===2||(e.touches&&e.touches.length>=2)){
+      s.joystick={active:false,startX:0,startY:0,dx:0,dy:0};
+      s.camDrag={lastSx:sx,lastSy:sy};
+      return;
+    }
     const cat=catAtScreen(sx,sy);
     // joystick: tap anywhere when laser off and not tapping a cat
     if(!cat&&!s.laserOn&&cv){
@@ -1808,15 +1813,12 @@ export default function App(){
   const onPointerMove=useCallback((e)=>{
     if(phaseRef.current!=="play")return;
     const s=gs.current;
-    // joystick move tracking
+    const{sx,sy}=getPos(e);
     if(s.joystick?.active){
       s.joystick.dx=sx-s.joystick.startX;
       s.joystick.dy=sy-s.joystick.startY;
-      // if laser is on, don't use joystick
-      if(s.laserOn) return;
       return;
     }
-    const{sx,sy}=getPos(e);
     if(s.drag){
       const wpos=s2w(sx,sy);
       const cat=s.cats.find(c=>c.id===s.drag.catId);
@@ -1902,7 +1904,7 @@ export default function App(){
         style={{position:"absolute",inset:0,width:"100%",height:"100%",display:"block",touchAction:"none",
           cursor:phase==="play"?(laserOn?"none":"grab"):"default",
           opacity:phase==="play"?1:0,pointerEvents:phase==="play"?"auto":"none"}}
-        onMouseDown={onPointerDown} onMouseMove={onPointerMove}
+        onContextMenu={e=>e.preventDefault()} onMouseDown={onPointerDown} onMouseMove={onPointerMove}
         onMouseUp={onPointerUp} onMouseLeave={onPointerLeave}
         onTouchStart={e=>{e.preventDefault();onPointerDown(e);}}
         onTouchMove={e=>{e.preventDefault();onPointerMove(e);}}
