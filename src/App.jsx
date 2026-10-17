@@ -49,8 +49,33 @@ function getClientId(){
   if(!id){ id="u_"+Math.random().toString(36).slice(2,12); localStorage.setItem("fikfuk_cid",id); }
   return id;
 }
-function getEpoch(){ return Math.floor((Date.now()-EPOCH_ANCHOR)/RESET_MS); }
-function nextResetMs(){ return EPOCH_ANCHOR+(getEpoch()+1)*RESET_MS-Date.now(); }
+// shared world clock: Ably server time minus this device's clock
+let clockOffset=0;
+function sharedNow(){ return Date.now()+clockOffset; }
+function getEpoch(){ return Math.floor((sharedNow()-EPOCH_ANCHOR)/RESET_MS); }
+function nextResetMs(){ return EPOCH_ANCHOR+(getEpoch()+1)*RESET_MS-sharedNow(); }
+
+// seeded RNG: same epoch + same tag = same sequence on every device
+function hashStr(str){
+  let h1=0xdeadbeef,h2=0x41c6ce57;
+  for(let i=0;i<str.length;i++){
+    const ch=str.charCodeAt(i);
+    h1=Math.imul(h1^ch,2654435761);
+    h2=Math.imul(h2^ch,1597334677);
+  }
+  h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);
+  h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);
+  return (h1^h2)>>>0;
+}
+function mulberry32(a){
+  return function(){
+    a|=0; a=a+0x6D2B79F5|0;
+    let t=Math.imul(a^(a>>>15),1|a);
+    t=t+Math.imul(t^(t>>>7),61|t)^t;
+    return ((t^(t>>>14))>>>0)/4294967296;
+  };
+}
+function worldRng(tag){ return mulberry32(hashStr("fikfuk:"+getEpoch()+":"+tag)); }
 function fmtCountdown(ms){
   if(ms<=0)return"00:00:00";
   const h=Math.floor(ms/3600000),m=Math.floor((ms%3600000)/60000),s=Math.floor((ms%60000)/1000);
@@ -413,58 +438,59 @@ function addToWall(text){
 }
 const SPAWN_INTERVALS = { ufo:30, fossil:45, wildcat:20, mouse:15, human:60, diablo:180 }; // seconds
 
-function spawnObj(type, existingObjs){
+function spawnObj(type, existingObjs, rng, slot){
+  const R=rng||Math.random;
   const margin=500;
-  const rx=()=>margin+Math.random()*(WORLD_W-margin*2);
-  const ry=()=>margin+Math.random()*(WORLD_H-margin*2);
+  const rx=()=>margin+R()*(WORLD_W-margin*2);
+  const ry=()=>margin+R()*(WORLD_H-margin*2);
   const count=existingObjs.filter(o=>o.type===type).length;
   if(count>=SPAWN_LIMITS[type]) return null;
-  const id=`${type}_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+  const id=(slot!=null)?`${type}_${getEpoch()}_${slot}`:`${type}_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
   if(type==="ufo") return{
     type:"ufo",id,x:rx(),y:ry(),
-    confession:NPC_CONFESSIONS[Math.floor(Math.random()*NPC_CONFESSIONS.length)],
-    vx:(Math.random()-0.5)*0.4,vy:(Math.random()-0.5)*0.15,
+    confession:NPC_CONFESSIONS[Math.floor(R()*NPC_CONFESSIONS.length)],
+    vx:(R()-0.5)*0.4,vy:(R()-0.5)*0.15,
     frame:0,hitCount:0,active:true,
   };
   if(type==="fossil") return{
     type:"fossil",id,x:rx(),y:ry(),
-    confession:NPC_CONFESSIONS[Math.floor(Math.random()*NPC_CONFESSIONS.length)],
+    confession:NPC_CONFESSIONS[Math.floor(R()*NPC_CONFESSIONS.length)],
     revealed:false,sitTimer:0,frame:0,
   };
   if(type==="wildcat"){
-    const palId=Math.floor(Math.random()*PALETTES.length);
+    const palId=Math.floor(R()*PALETTES.length);
     return{
       type:"wildcat",id,x:rx(),y:ry(),
-      pal:{...PALETTES[palId]},flip:Math.random()>0.5,
-      vx:(Math.random()-0.5)*1.5,vy:(Math.random()-0.5)*1.5,
-      frame:Math.floor(Math.random()*200),
-      wanderAngle:Math.random()*Math.PI*2,
-      wanderTimer:Math.floor(Math.random()*120),
+      pal:{...PALETTES[palId]},flip:R()>0.5,
+      vx:(R()-0.5)*1.5,vy:(R()-0.5)*1.5,
+      frame:Math.floor(R()*200),
+      wanderAngle:R()*Math.PI*2,
+      wanderTimer:Math.floor(R()*120),
     };
   }
   if(type==="mouse") return{
-    type:"mouse",id,x:rx(),y:ry(),flip:Math.random()>0.5,
-    vx:(Math.random()-0.5)*2,vy:(Math.random()-0.5)*2,
-    frame:Math.floor(Math.random()*200),
-    wanderAngle:Math.random()*Math.PI*2,
-    wanderTimer:Math.floor(Math.random()*60),
+    type:"mouse",id,x:rx(),y:ry(),flip:R()>0.5,
+    vx:(R()-0.5)*2,vy:(R()-0.5)*2,
+    frame:Math.floor(R()*200),
+    wanderAngle:R()*Math.PI*2,
+    wanderTimer:Math.floor(R()*60),
     alive:true,
   };
   if(type==="human") return{
     type:"human",id,x:rx(),y:ry(),
-    vx:(Math.random()-0.5)*0.5,vy:0,
-    frame:Math.floor(Math.random()*200),
-    wanderAngle:Math.random()*Math.PI*2,
-    wanderTimer:200+Math.floor(Math.random()*300),
+    vx:(R()-0.5)*0.5,vy:0,
+    frame:Math.floor(R()*200),
+    wanderAngle:R()*Math.PI*2,
+    wanderTimer:200+Math.floor(R()*300),
     dropTimer:600,// drop confession every 600 frames ~10s
     breadcrumbs:[],
   };
   if(type==="diablo") return{
     type:"diablo",id:"diablo_0",
-    x:WORLD_W/2+Math.random()*2000-1000,
-    y:WORLD_H/2+Math.random()*2000-1000,
+    x:WORLD_W/2+R()*2000-1000,
+    y:WORLD_H/2+R()*2000-1000,
     vx:0.2,vy:0.1,frame:0,
-    wanderAngle:Math.random()*Math.PI*2,
+    wanderAngle:R()*Math.PI*2,
     wanderTimer:300,
     hp:10,// needs 10 laser hits to defeat
     hitCooldown:0,
@@ -474,13 +500,10 @@ function spawnObj(type, existingObjs){
 
 function generateWorldObjects(){
   const objs=[];
-  // start with minimal set
-  const obj=spawnObj("ufo",objs); if(obj)objs.push(obj);
-  const obj2=spawnObj("fossil",objs); if(obj2)objs.push(obj2);
-  const obj3=spawnObj("wildcat",objs); if(obj3)objs.push(obj3);
-  const obj4=spawnObj("mouse",objs); if(obj4)objs.push(obj4);
-  const obj5=spawnObj("human",objs); if(obj5)objs.push(obj5);
-  const obj6=spawnObj("diablo",objs); if(obj6)objs.push(obj6);
+  ["ufo","fossil","wildcat","mouse","human","diablo"].forEach(type=>{
+    const obj=spawnObj(type,objs,worldRng("init:"+type),0);
+    if(obj)objs.push(obj);
+  });
   return objs;
 }
 
@@ -573,9 +596,10 @@ export default function App(){
     pat.wanderTimer=0;
     // oracle - rare, random location far from spawn
     const oraclePal={...SYS_PAL_ORACLE};
+    const orng=worldRng("oracle");
     const ocat=makeCat(
-      1000+Math.random()*(WORLD_W-2000),
-      1000+Math.random()*(WORLD_H-2000),
+      1000+orng()*(WORLD_W-2000),
+      1000+orng()*(WORLD_H-2000),
       oraclePal,"oracle",false,true,"oracle"
     );
     ocat.confessions=["i see all","i know all","ask me anything","double-tap to consult"];
@@ -598,6 +622,9 @@ export default function App(){
       const s=gs.current;
       s.stars=genStars();
       s.worldObjs=generateWorldObjects();
+      s._worldEpoch=getEpoch();
+      s._initObjs=s.worldObjs.map(o=>({type:o.type,x:Math.round(o.x),y:Math.round(o.y)}));
+      window.__fikfuk=()=>({epoch:getEpoch(),offsetMs:Math.round(clockOffset),initial:s._initObjs});
       if(pendingSpawn.current){
         const{name,palId,restored}=pendingSpawn.current;
         pendingSpawn.current=null;
@@ -622,6 +649,20 @@ export default function App(){
     if(ablyRef.current)ablyRef.current.close();
     const ably=new Ably.Realtime({key:ABLY_KEY,clientId:clientId.current});
     ablyRef.current=ably;
+    // sync to Ably's server clock so every player shares one world clock
+    const _t0=Date.now();
+    ably.time().then(serverT=>{
+      const _t1=Date.now();
+      clockOffset=serverT-(_t0+_t1)/2;
+      const s=gs.current;
+      if(s.ready&&getEpoch()!==s._worldEpoch){
+        s.worldObjs=generateWorldObjects();
+        s._worldEpoch=getEpoch();
+        s._initObjs=s.worldObjs.map(o=>({type:o.type,x:Math.round(o.x),y:Math.round(o.y)}));
+        const orc=s.cats.find(c=>c.sysType==="oracle");
+        if(orc){const r=worldRng("oracle");orc.x=1000+r()*(WORLD_W-2000);orc.y=1000+r()*(WORLD_H-2000);}
+      }
+    }).catch(()=>{});
     const channel=ably.channels.get(CHANNEL);
     channelRef.current=channel;
     const myPresenceData=()=>({
