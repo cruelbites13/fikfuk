@@ -104,6 +104,7 @@ const ABOUT_LINES  =["fikfuk.wtf","a canvas of strangers","& their pixel cats","
 const SYS_PAL_PATATES={ body:"#e07b39",shadow:"#a85a28",stripe:"#c4672f",inner:"#ffd9a0",eye:"#ffcc66",pupil:"#7a4a10",nose:"#ffb6c1",_name:"patates" };
 const PATATES_LINES=["thank u for taking care of me","i loved being clingy with u","my naughty days were the best days","i am okay now, dont worry","i still hear u calling my name","u gave me a good life"];
 const SYS_PAL_ORACLE={ body:"#1a0a2e",shadow:"#0d0514",stripe:"#3d1a5e",inner:"#e0c0ff",eye:"#cc44ff",pupil:"#660099",nose:"#ff88ff",_name:"oracle" };
+const FEED_LINES=["a mouse! thank u","my favorite, how did u know","purr purr, so good","i saved a spot for u","best treat ever","u always know what i like"];
 const ORACLE_RESPONSES=[
   "yes, but not yet","no, and that is okay","the stars say maybe","ask again at midnight",
   "your cat knows the answer","it has already happened","let it go","not in this session",
@@ -789,6 +790,7 @@ export default function App(){
       });
     };
     window.__fikfukSync=sendSync;
+    window.__fikfukMouse=()=>{const s=gs.current;const m=s.cats.find(c=>c.id===s.myId);if(m)m._carry=true;};
     window.__fikfukPub=()=>window.__fikfukPubN||0;
     channel.subscribe("sync",(msg)=>{
       if(msg.clientId===clientId.current)return;
@@ -805,6 +807,11 @@ export default function App(){
       }
       const dia=s.worldObjs.find(o=>o.type==="diablo"&&d.dia&&o.id===d.dia.id);
       if(dia&&d.dia.hp>0&&d.dia.hp<dia.hp)dia.hp=d.dia.hp;
+    });
+    channel.subscribe("feed",(msg)=>{
+      if(msg.clientId===clientId.current)return;
+      const pat=gs.current.cats.find(c=>c.sysType==="patates");
+      if(pat)feedPatates(pat,false);
     });
     channel.subscribe("chirp",(msg)=>{
       if(msg.clientId===clientId.current)return;
@@ -1221,6 +1228,11 @@ export default function App(){
                 toRemove.add(obj.id);
                 // speed boost for player cat
                 myCat._boostTimer=300;
+                myCat._carry=true;
+                if(!s._carryHint){
+                  s._carryHint=true;
+                  s.particles.push({text:"bring it to patates",x:myCat.x-20,y:myCat.y-10,vx:0,vy:-0.4,alpha:1,life:200,delay:0});
+                }
               }
             }
           }
@@ -1395,6 +1407,15 @@ export default function App(){
         }
       }
 
+      // patates feeding: deliver a carried mouse
+      {
+        const patF=s.cats.find(c=>c.sysType==="patates");
+        if(patF&&myCat&&myCat._carry&&Math.hypot(myCat.x-patF.x,myCat.y-patF.y)<80){
+          myCat._carry=false;
+          feedPatates(patF,true);
+        }
+      }
+
       // apply removals and additions
       if(toRemove.size>0){
         toRemove.forEach(id=>{
@@ -1478,6 +1499,22 @@ export default function App(){
         ctx.fillStyle=`rgba(200,200,255,${Math.min(1,st.a+nightBoost+Math.sin(s.frame*st.speed)*0.12)})`;ctx.fill();
       });
       for(let gy=0;gy<H;gy+=4){ctx.fillStyle="rgba(0,0,0,0.06)";ctx.fillRect(0,gy,W,2);}
+
+      // glow around fed cats
+      s.cats.forEach(c=>{
+        if(!c._glowUntil||c._glowUntil<Date.now())return;
+        const{sx:gx,sy:gy}=w2s(c.x,c.y);
+        if(gx<-100||gx>W+100||gy<-100||gy>H+100)return;
+        const left=(c._glowUntil-Date.now())/60000;
+        ctx.save();
+        ctx.globalAlpha=Math.min(0.35,left*0.5)*(0.8+Math.sin(s.frame*0.06)*0.2);
+        const gg=ctx.createRadialGradient(gx+5.5*P,gy+5*P,4,gx+5.5*P,gy+5*P,60);
+        gg.addColorStop(0,"rgba(255,190,110,1)");
+        gg.addColorStop(1,"rgba(255,190,110,0)");
+        ctx.fillStyle=gg;
+        ctx.beginPath();ctx.arc(gx+5.5*P,gy+5*P,60,0,Math.PI*2);ctx.fill();
+        ctx.restore();
+      });
 
       // chirp ripples
       if(s._chirps&&s._chirps.length){
@@ -1787,6 +1824,7 @@ export default function App(){
           ctx.fillText(c._tag,sx+5.5*P+8,sy-8);
           ctx.restore();
         }
+        if(c.isOwn&&c._carry){drawMouse(ctx,sx-6,sy-18,c.frame,c.flip);}
         // mood indicator above own cat
         if(c.isOwn&&!c.isSys&&c.mood&&c.mood!=="neutral"){
           const moodEmoji={scared:"😱",happy:"😻",friendly:"😸"}[c.mood]||"";
@@ -1886,12 +1924,12 @@ export default function App(){
       s.cats.filter(c=>c.isSys).forEach(c=>{
         const mx=MM_X+(c.x/WORLD_W)*MM_W;
         const my=MM_Y+(c.y/WORLD_H)*MM_H;
-        const col=c.sysType==="privacy"?"#7777ff":"#44cc44";
+        const col=c.sysType==="privacy"?"#7777ff":c.sysType==="patates"?"#ffaa44":c.sysType==="oracle"?"#cc44ff":"#44cc44";
         ctx.fillStyle=col;
         ctx.fillRect(mx-2,my-2,4,4);
         ctx.font="5px monospace";
         ctx.fillStyle=col;
-        ctx.fillText(c.sysType==="privacy"?"P":"A",mx+3,my+2);
+        ctx.fillText(c.sysType==="privacy"?"P":c.sysType==="patates"?"\u2665":c.sysType==="oracle"?"?":"A",mx+3,my+2);
       });
       // player cats with their actual color
       s.cats.filter(c=>!c.isSys).forEach(c=>{
@@ -1990,6 +2028,21 @@ export default function App(){
     }
     return null;
   };
+  function feedPatates(pat,mine){
+    const s=gs.current;
+    if(!mine&&pat._glowUntil&&pat._glowUntil>Date.now()+50000)return;
+    const line=FEED_LINES[Math.floor(Math.random()*FEED_LINES.length)];
+    pat._glowUntil=Date.now()+60000;
+    for(let i=0;i<6;i++){
+      s.particles.push({text:"<3",x:pat.x+4+i*6,y:pat.y-6,vx:(Math.random()-0.5)*0.6,vy:-0.5-Math.random()*0.5,alpha:1,life:150+i*10,delay:i*6});
+    }
+    s.particles.push({text:line,x:pat.x-10,y:pat.y-30,vx:0,vy:-0.25,alpha:1,life:260,delay:0});
+    if(mine){
+      const me=s.cats.find(c=>c.id===s.myId);
+      if(me){me._glowUntil=Date.now()+60000;me._boostTimer=300;}
+      channelRef.current?.publish("feed",{});
+    }
+  }
   function applyChirp(x,y,fromId){
     const s=gs.current;
     s._chirps=s._chirps||[];
