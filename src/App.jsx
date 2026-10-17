@@ -752,6 +752,7 @@ export default function App(){
     });
 
     channel.subscribe("blackhole_hit",(msg)=>{
+      if(msg.clientId===clientId.current)return;
       const s=gs.current;
       const bh=s.worldObjs.find(o=>o.type==="blackhole");
       if(bh){
@@ -768,7 +769,7 @@ export default function App(){
           // speed boost all cats
           s.cats.forEach(c=>{if(!c.isSys){c._boostTimer=300;}});
           s.worldObjs=s.worldObjs.filter(o=>o.type!=="blackhole");
-          s._bhCooldown=45*60*60; // 45 min cooldown in frames
+          s._bhClosedSlot=bh.slot;
         }
       }
     });
@@ -1038,25 +1039,42 @@ export default function App(){
       if(s.frame%60===0){
         const types=["ufo","fossil","wildcat","mouse","human","diablo"];
         types.forEach(type=>{
-          const interval=SPAWN_INTERVALS[type]*60;
-          if(s.frame%(interval)===0){
-            const newObj=spawnObj(type,s.worldObjs);
+          const slotNow=Math.floor((sharedNow()-EPOCH_ANCHOR)/(SPAWN_INTERVALS[type]*1000));
+          s._spawnSlot=s._spawnSlot||{};
+          if(s._spawnSlot[type]===undefined)s._spawnSlot[type]=slotNow;
+          if(slotNow!==s._spawnSlot[type]){
+            s._spawnSlot[type]=slotNow;
+            const newObj=spawnObj(type,s.worldObjs,mulberry32(hashStr("fikfuk:spawn:"+type+":"+slotNow)),"t"+slotNow);
             if(newObj)s.worldObjs.push(newObj);
           }
         });
       }
-      // black hole spawns every 45 min (162000 frames at 60fps)
-      if(s._bhCooldown>0) s._bhCooldown--;
-      if(!s.worldObjs.find(o=>o.type==="blackhole")&&s._bhCooldown===0&&s.frame>3600){
-        s.worldObjs.push({
-          type:"blackhole", id:"bh_0",
-          x:1000+Math.random()*(WORLD_W-2000),
-          y:1000+Math.random()*(WORLD_H-2000),
-          hp:50, maxHp:50,
-          pullRadius:300,
-          frame:0,
-        });
-        s._bhCooldown=-1; // active
+      // black hole: fixed schedule on the shared clock
+      // active for the first 20 min of every 45 min slot, seeded position
+      {
+        const bhSlotMs=45*60*1000;
+        const sinceA=sharedNow()-EPOCH_ANCHOR;
+        const bhSlot=Math.floor(sinceA/bhSlotMs);
+        const inWindow=(sinceA%bhSlotMs)<20*60*1000;
+        const bhPos=(slot)=>{
+          const r=mulberry32(hashStr("fikfuk:bh:"+slot));
+          return {x:1000+r()*(WORLD_W-2000),y:1000+r()*(WORLD_H-2000)};
+        };
+        const bhObj=s.worldObjs.find(o=>o.type==="blackhole");
+        if(inWindow&&!bhObj&&s._bhClosedSlot!==bhSlot){
+          const p=bhPos(bhSlot);
+          s.worldObjs.push({type:"blackhole",id:"bh_"+bhSlot,x:p.x,y:p.y,hp:50,maxHp:50,pullRadius:300,frame:0,slot:bhSlot});
+        }
+        if(!inWindow&&bhObj){
+          s.worldObjs=s.worldObjs.filter(o=>o.type!=="blackhole");
+        }
+        if(!window.__fikfukBH){
+          window.__fikfukBH=(slot)=>{
+            const sl=(slot===undefined)?Math.floor((sharedNow()-EPOCH_ANCHOR)/bhSlotMs):slot;
+            const p=bhPos(sl);
+            return {slot:sl,x:Math.round(p.x),y:Math.round(p.y),activeNow:((sharedNow()-EPOCH_ANCHOR)%bhSlotMs)<20*60*1000};
+          };
+        }
       }
 
       // ── laser hit detection on UFO ──
@@ -1252,7 +1270,7 @@ export default function App(){
               obj._hitCooldown=10;
               obj.hp=Math.max(0,obj.hp-1);
               channelRef.current?.publish("blackhole_hit",{});
-              if(obj.hp<=0) toRemove.add(obj.id);
+              if(obj.hp<=0){ s._bhClosedSlot=obj.slot; toRemove.add(obj.id); }
             }
           }
         }
@@ -1381,7 +1399,7 @@ export default function App(){
       // ── Confession Tide ──
       // tide sweeps across world every 15 min (54000 frames)
       const TIDE_PERIOD = 54000;
-      const tidePhase = s.frame % TIDE_PERIOD;
+      const tidePhase = (((sharedNow()-EPOCH_ANCHOR)/1000*60)%TIDE_PERIOD);
       const tideActive = tidePhase < WORLD_W / 2; // active for first half
       if(tideActive){
         // world x position of tide wave front
